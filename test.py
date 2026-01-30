@@ -2,6 +2,8 @@ import json  # 简单测试能不能提交
 # 再测试mac能不能提交
 # 测试完了win能拉取mac的提交
 
+# 测试mac提交
+
 import torch
 from torch import nn
 import torch.nn.functional as F
