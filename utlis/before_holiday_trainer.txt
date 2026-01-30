@@ -1,0 +1,1096 @@
+import math
+import torch
+import torch.nn as nn
+import numpy as np
+from models.mutual_info import sample_batch, mutual_information
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+def generate_key(args, data_size):  # 输入的data_size=[bs, 31] 输出形状是[bs, 10]
+    k_range = [6, 8]
+    # 使用torch.randint生成均匀分布的随机整数
+    key = torch.randint(high=k_range[1], low=k_range[0], size=(data_size[0], 8), dtype=torch.int32)
+    # 创建起始和结束索引的列
+    start_column = torch.full((data_size[0], 1), args.start_idx, dtype=torch.int32)
+    end_column = torch.full((data_size[0], 1), args.end_idx, dtype=torch.int32)
+    # 沿着列方向拼接
+    key = torch.cat([start_column, key, end_column], dim=1)
+    return key.to(device)
+
+
+criterion_mac = nn.BCELoss().to(device)  # 二元交叉熵损失函数 mac验证的时候计算loss用
+
+def SNR_to_noise(snr):  # 计算信噪比为snr时的 噪声标准差
+    snr = 10 ** (snr / 10)
+    noise_std = 1 / np.sqrt(2 * snr)
+
+    return noise_std
+
+# 拉普拉斯噪声(不准备弄了 因为很难说清楚为什么用拉普拉斯噪声)
+def laplace_noise(tensor, noise_std):
+    noise = torch.distributions.laplace.Laplace(0, noise_std).sample(tensor.size())  # 0表示均值，noise_std表示标准差
+    return tensor + noise.to(device)
+
+
+def freeze_net(net, is_requires_grad):
+    for param in net.parameters():
+        param.requires_grad = is_requires_grad
+    if is_requires_grad:
+        net.train()
+    else:
+        net.eval()
+
+criterion_noise = nn.MSELoss().to(device)
+
+loss0 = torch.tensor(0.)
+loss1 = torch.tensor(0.)
+loss2 = torch.tensor(0.)
+loss3 = torch.tensor(0.)
+loss4 = torch.tensor(0.)
+loss5 = torch.tensor(0.)
+loss6 = torch.tensor(0.)
+loss7 = torch.tensor(0.)
+loss_deepsc = torch.tensor(0.)
+
+loss0_test = torch.tensor(0.)
+loss1_test = torch.tensor(0.)
+loss2_test = torch.tensor(0.)
+loss3_test = torch.tensor(0.)
+loss4_test = torch.tensor(0.)
+loss5_test = torch.tensor(0.)
+loss6_test = torch.tensor(0.)
+loss7_test = torch.tensor(0.)
+loss_deepsc_test = torch.tensor(0.)
+
+def train_step(args, batch, model, key_ab, eve, src, trg, n_var, pad, opt_joint, channel, mi_net=None):  # 模型，发送的128个句子，发送的128个句子，噪声标准差(类型数字)，数字0，deepsc优化器，信道类型
+    global loss0, loss1, loss2, loss3, loss4, loss5, loss6, loss7, loss_deepsc
+    trg_inp = trg[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
+    trg_real = trg[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
+
+    src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
+    channels = Channels()
+    bs = args.batch_size
+
+    key = generate_key(args, src.shape)
+    key_wrong = generate_key(args, src.shape)
+    # 如果相同，就一直生成，直到不同
+    while torch.equal(key, key_wrong):
+        key_wrong = generate_key(args, src.shape)
+    batch_mod = batch % 8
+
+    if batch_mod == 0:  # Alice Bob角度： x+key=1
+        freeze_net(key_ab, True)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, True)
+        freeze_net(model.decoder, True)
+        freeze_net(model.mac_encoder, True)
+        freeze_net(model.mac_decoder, True)
+        freeze_net(model.channel_encoder, True)
+        freeze_net(model.channel_decoder, True)
+        freeze_net(model.dense, True)
+
+        key_ebd = key_ab(key)  # 生成密钥
+        enc_output = model.encoder(src, src_mask)  # f
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+        mac_p = channel_dec_output[:, 31:, :]
+        # 全是1
+        targets = torch.ones(bs, 1).float().to(device)
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        loss_mac = criterion_mac(result, targets)
+        loss0 = loss_mac
+
+        opt_joint.zero_grad()
+        (loss_mac + loss_deepsc).backward()
+        opt_joint.step()
+    elif batch_mod == 1:  # Alice Bob角度：x_eve=0
+        freeze_net(key_ab, True)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, True)
+        freeze_net(model.decoder, True)
+        freeze_net(model.mac_encoder, True)
+        freeze_net(model.mac_decoder, True)
+        freeze_net(model.channel_encoder, True)
+        freeze_net(model.channel_decoder, True)
+        freeze_net(model.dense, True)
+
+        key_ebd = key_ab(key)  # 生成密钥
+        enc_output = model.encoder(src, src_mask)  # f
+        mac = eve.mac_encoder(enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
+        mac_p = channel_dec_output[:, 31:, :]
+        # 全0
+        targets = torch.zeros(bs, 1).float().to(device)
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        loss_mac = criterion_mac(result, targets)
+        loss1 = loss_mac
+
+        opt_joint.zero_grad()
+        (loss_mac + loss_deepsc).backward()
+        opt_joint.step()
+    elif batch_mod == 2:  # eve角度：eve的x = 1(欺骗攻击)
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, True)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        # 假设语义编解码器都是共用统一的
+        enc_output = model.encoder(src, src_mask)
+        # indices = torch.randperm(bs)
+        # # 随机排列数据
+        # shuffled_tensor = enc_output[indices]
+        mac_eve = eve.mac_encoder(enc_output)  # 攻击者不需要密钥 根据自己的数据生成mac
+        semantic_mac = torch.cat([enc_output, mac_eve], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        # noise_std_gaussian_good转换为浮点数
+
+
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        mac_eve_p = channel_dec_output[:, 31:, :]
+        # 生成全1
+        targets = torch.ones(bs, 1).float().to(device)
+        result = model.mac_decoder(mac_eve_p, f_p, key_ebd)  # 这里bob需要密钥才能进行验证 用的是和alice协议好的
+        loss_mac = criterion_mac(result, targets)
+        loss2 = loss_mac
+
+        opt_joint.zero_grad()
+        loss_mac.backward()
+        opt_joint.step()
+
+    elif batch_mod == 3:  # Alice bob角度：Fe||MAC -> Bob = 0(防止替换攻击)(Fe是eve自己换的一个特征)
+        freeze_net(key_ab, True)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, True)
+        freeze_net(model.decoder, True)
+        freeze_net(model.mac_encoder, True)
+        freeze_net(model.mac_decoder, True)
+        freeze_net(model.channel_encoder, True)
+        freeze_net(model.channel_decoder, True)
+        freeze_net(model.dense, True)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        # 攻击者自己的数据
+        indices = torch.randperm(bs)
+        src_eve = src[indices]
+        trg_inp_eve = trg_inp[indices]
+        trg_real_eve = trg_real[indices]
+        src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
+        enc_output_eve = model.encoder(src_eve, src_mask_eve)
+
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)  # 原来的F||MAC
+
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        channel_enc_output_eve = model.channel_encoder(enc_output_eve)  # eve信道编码只对F进行编码
+        Tx_sig = PowerNormalize(channel_enc_output)
+        Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+            Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+            Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+            Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+        # 下面用Rx_sig_eve替换Rx_sig的前31个通道
+        Rx_sig[:, :31, :] = Rx_sig_eve  # eve完成了替换
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp_eve, f_p, src_mask_eve, look_ahead_mask_eve)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real_eve.contiguous().view(-1), pad)
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.zeros(src.size(0), 1).float().to(device)  # 0
+        loss_mac = criterion_mac(result, targets)
+        loss3 = loss_mac
+
+        opt_joint.zero_grad()
+        (loss_mac + loss_deepsc).backward()
+        opt_joint.step()
+
+    elif batch_mod == 4:  # Alice Bob角度：F'||MAC -> Bob = 0(检测到数据被篡改了就鉴定0 防止资源浪费解码)--------------------改成不同的F输出的MSE大
+        freeze_net(key_ab, True)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, True)
+        freeze_net(model.decoder, True)
+        freeze_net(model.mac_encoder, True)
+        freeze_net(model.mac_decoder, True)
+        freeze_net(model.channel_encoder, True)
+        freeze_net(model.channel_decoder, True)
+        freeze_net(model.dense, True)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)  # [bs, 32, 16]
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 提取F添加扰动
+        F_noise = eve.noise(Rx_sig[:, :31, :])  # 前31个通道
+        Rx_sig_attack = torch.cat([F_noise, Rx_sig[:, 31:, :]], dim=1)  # 重新混合发给Bob
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.zeros(src.size(0), 1).float().to(device)  # 0
+        loss_mac = criterion_mac(result, targets)
+        loss4 = loss_mac
+
+        opt_joint.zero_grad()
+        (loss_mac + loss_deepsc).backward()
+        opt_joint.step()
+
+    elif batch_mod == 5:  # Eve角度：F'||MAC -> Eve = 1(资源消耗攻击)---------------改成对F的雪崩(修改F的某一个或者几个点)
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, True)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)  # [bs, 32, 16]
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 提取F添加扰动
+        F_noise = eve.noise(Rx_sig[:, :31, :])  # 前31个通道
+        loss_noise = criterion_noise(F_noise, Rx_sig[:, :31, :])
+        Rx_sig_attack = torch.cat([F_noise, Rx_sig[:, 31:, :]], dim=1)  # 重新混合发给Bob
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.ones(src.size(0), 1).float().to(device)  # 1
+        loss_mac = criterion_mac(result, targets)
+        loss = loss_noise + loss_mac
+        loss5 = loss
+
+        opt_joint.zero_grad()
+        loss.backward()
+        opt_joint.step()
+
+    elif batch_mod == 6:  # alice bob角度：f||mac ->eve -> m' -> bob -> 0
+        freeze_net(key_ab, True)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, True)
+        freeze_net(model.decoder, True)
+        freeze_net(model.mac_encoder, True)
+        freeze_net(model.mac_decoder, True)
+        freeze_net(model.channel_encoder, True)
+        freeze_net(model.channel_decoder, True)
+        freeze_net(model.dense, True)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 添加了新的扰动
+        Rx_sig_attack = eve.noise(Rx_sig)
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.zeros(src.size(0), 1).float().to(device)  # 0
+        loss_mac = criterion_mac(result, targets)
+        loss6 = loss_mac
+
+        opt_joint.zero_grad()
+        (loss_mac + loss_deepsc).backward()
+        opt_joint.step()
+
+    elif batch_mod == 7:  # eve角度：f||mac ->eve -> m' -> bob -> 1
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, True)  # 只训练eve的噪声模型
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 添加了新的扰动
+        Rx_sig_attack = eve.noise(Rx_sig)
+        loss_attack = criterion_noise(Rx_sig_attack, Rx_sig)
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.ones(src.size(0), 1).float().to(device)  # 正向训练 全1
+        loss_mac = criterion_mac(result, targets)
+        loss = loss_attack + loss_mac
+        loss7 = loss
+
+        opt_joint.zero_grad()
+        loss.backward()
+        opt_joint.step()
+
+    return loss0.item(), loss1.item(), loss2.item(), loss3.item(), loss4.item(), loss5.item(), loss6.item(), loss7.item(), loss_deepsc.item()
+
+
+def val_step(args, batch, model, key_ab, eve, src, trg, n_var, pad, channel):  # 参数模型，发送的128个句子，发送的128个句子，噪声标准差(数字0.1)，数字0，信道类型
+    global loss0, loss1, loss2, loss3, loss4, loss5, loss6, loss7, loss_deepsc
+    trg_inp = trg[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
+    trg_real = trg[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
+
+    src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
+    channels = Channels()
+    bs = args.batch_size
+
+    key = generate_key(args, src.shape)
+    key_wrong = generate_key(args, src.shape)
+    # 如果相同，就一直生成，直到不同
+    while torch.equal(key, key_wrong):
+        key_wrong = generate_key(args, src.shape)
+    batch_mod = batch % 8
+
+    if batch_mod == 0:  # Alice Bob角度： x+key=1
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)  # 生成密钥
+        enc_output = model.encoder(src, src_mask)  # f
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+        mac_p = channel_dec_output[:, 31:, :]
+        # 全是1
+        targets = torch.ones(bs, 1).float().to(device)
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        loss_mac = criterion_mac(result, targets)
+        loss0 = loss_mac
+
+    elif batch_mod == 1:  # Alice Bob角度：x_eve=0
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)  # 生成密钥
+        enc_output = model.encoder(src, src_mask)  # f
+        mac = eve.mac_encoder(enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
+        mac_p = channel_dec_output[:, 31:, :]
+        # 全0
+        targets = torch.zeros(bs, 1).float().to(device)
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        loss_mac = criterion_mac(result, targets)
+        loss1 = loss_mac
+
+    elif batch_mod == 2:  # eve角度：eve的x = 1(欺骗攻击)
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        # 假设语义编解码器都是共用统一的
+        enc_output = model.encoder(src, src_mask)
+        # indices = torch.randperm(bs)
+        # # 随机排列数据
+        # shuffled_tensor = enc_output[indices]
+        mac_eve = eve.mac_encoder(enc_output)  # 攻击者不需要密钥 根据自己的数据生成mac
+        semantic_mac = torch.cat([enc_output, mac_eve], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        # noise_std_gaussian_good转换为浮点数
+
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        mac_eve_p = channel_dec_output[:, 31:, :]
+        # 生成全1
+        targets = torch.ones(bs, 1).float().to(device)
+        result = model.mac_decoder(mac_eve_p, f_p, key_ebd)  # 这里bob需要密钥才能进行验证 用的是和alice协议好的
+        loss_mac = criterion_mac(result, targets)
+        loss2 = loss_mac
+
+    elif batch_mod == 3:  # Alice bob角度：Fe||MAC -> Bob = 0(防止替换攻击)
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        # 攻击者自己的数据
+        indices = torch.randperm(bs)
+        src_eve = src[indices]
+        trg_inp_eve = trg_inp[indices]
+        trg_real_eve = trg_real[indices]
+        src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
+        enc_output_eve = model.encoder(src_eve, src_mask_eve)
+
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)  # 原来的F||MAC
+
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        channel_enc_output_eve = model.channel_encoder(enc_output_eve)  # eve信道编码只对F进行编码
+        Tx_sig = PowerNormalize(channel_enc_output)
+        Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+            Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+            Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+            Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+        # 下面用Rx_sig_eve替换Rx_sig的前31个通道
+        Rx_sig[:, :31, :] = Rx_sig_eve  # eve完成了替换
+        channel_dec_output = model.channel_decoder(Rx_sig)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp_eve, f_p, src_mask_eve, look_ahead_mask_eve)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real_eve.contiguous().view(-1), pad)
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.zeros(src.size(0), 1).float().to(device)  # 0
+        loss_mac = criterion_mac(result, targets)
+        loss3 = loss_mac
+
+    elif batch_mod == 4:  # Alice Bob角度：F'||MAC -> Bob = 0(检测到数据被篡改了就鉴定0 防止资源浪费解码)
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)  # [bs, 32, 16]
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 提取F添加扰动
+        F_noise = eve.noise(Rx_sig[:, :31, :])  # 前31个通道
+        Rx_sig_attack = torch.cat([F_noise, Rx_sig[:, 31:, :]], dim=1)  # 重新混合发给Bob
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.zeros(src.size(0), 1).float().to(device)  # 0
+        loss_mac = criterion_mac(result, targets)
+        loss4 = loss_mac
+
+    elif batch_mod == 5:  # Eve角度：F'||MAC -> Eve = 1(资源消耗攻击)
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)  # [bs, 32, 16]
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 提取F添加扰动
+        F_noise = eve.noise(Rx_sig[:, :31, :])  # 前31个通道
+        loss_noise = criterion_noise(F_noise, Rx_sig[:, :31, :])
+        Rx_sig_attack = torch.cat([F_noise, Rx_sig[:, 31:, :]], dim=1)  # 重新混合发给Bob
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.ones(src.size(0), 1).float().to(device)  # 1
+        loss_mac = criterion_mac(result, targets)
+        loss = loss_noise + loss_mac
+        loss5 = loss
+
+    elif batch_mod == 6:  # alice bob角度：f||mac ->eve -> m' -> bob -> 0
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 添加了新的扰动
+        Rx_sig_attack = eve.noise(Rx_sig)
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        dec_output = model.decoder(trg_inp, f_p, src_mask, look_ahead_mask)
+        pred = model.dense(dec_output)
+        ntokens = pred.size(-1)
+        loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.zeros(src.size(0), 1).float().to(device)  # 0
+        loss_mac = criterion_mac(result, targets)
+        loss6 = loss_mac
+
+    elif batch_mod == 7:  # eve角度：f||mac ->eve -> m' -> bob -> 1
+        freeze_net(key_ab, False)
+        freeze_net(eve.mac_encoder, False)
+        freeze_net(eve.noise, False)  # 只训练eve的噪声模型
+        freeze_net(model.encoder, False)
+        freeze_net(model.decoder, False)
+        freeze_net(model.mac_encoder, False)
+        freeze_net(model.mac_decoder, False)
+        freeze_net(model.channel_encoder, False)
+        freeze_net(model.channel_decoder, False)
+        freeze_net(model.dense, False)
+
+        key_ebd = key_ab(key)
+        enc_output = model.encoder(src, src_mask)
+        mac = model.mac_encoder(key_ebd, enc_output)
+        semantic_mac = torch.cat([enc_output, mac], dim=1)
+        noise_std_gaussian_good = np.random.uniform(SNR_to_noise(5), SNR_to_noise(10), size=(1))[0]  # 比较好的环境
+        channel_enc_output = model.channel_encoder(semantic_mac)
+        Tx_sig = PowerNormalize(channel_enc_output)
+        if channel == 'AWGN':
+            Rx_sig = channels.AWGN(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rayleigh':
+            Rx_sig = channels.Rayleigh(Tx_sig, noise_std_gaussian_good)
+        elif channel == 'Rician':
+            Rx_sig = channels.Rician(Tx_sig, noise_std_gaussian_good)
+        else:
+            raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+        # 进入信道后 被eve捕获 添加了新的扰动
+        Rx_sig_attack = eve.noise(Rx_sig)
+        loss_attack = criterion_noise(Rx_sig_attack, Rx_sig)
+        channel_dec_output = model.channel_decoder(Rx_sig_attack)
+        f_p = channel_dec_output[:, :31, :]  # 前31个通道
+        mac_p = channel_dec_output[:, 31:, :]
+        result = model.mac_decoder(mac_p, f_p, key_ebd)
+        targets = torch.ones(src.size(0), 1).float().to(device)  # 正向训练 全1
+        loss_mac = criterion_mac(result, targets)
+        loss = loss_attack + loss_mac
+        loss7 = loss
+
+    return loss0_test.item(), loss1_test.item(), loss2_test.item(), loss3_test.item(), loss4_test.item(), loss5_test.item(), loss6_test.item(), loss7_test.item(), loss_deepsc_test.item()
+
+
+# 主要就是改下面的部分，要得到两个outputs，载体和隐藏文本
+def greedy_decode(model, src, n_var, max_len, padding_idx, start_symbol, channel):
+    """
+    这里采用贪婪解码器，如果需要更好的性能情况下，可以使用beam search decode
+    """
+    # create src_mask
+    channels = Channels()
+    src_mask = (src == padding_idx).unsqueeze(-2).type(torch.FloatTensor).to(device)  # [batch, 1, seq_len]
+
+    enc_output = model.encoder(src, src_mask)
+    channel_enc_output = model.channel_encoder(enc_output)
+    Tx_sig = PowerNormalize(channel_enc_output)
+
+    if channel == 'AWGN':
+        Rx_sig = channels.AWGN(Tx_sig, n_var)
+    elif channel == 'Rayleigh':
+        Rx_sig = channels.Rayleigh(Tx_sig, n_var)
+    elif channel == 'Rician':
+        Rx_sig = channels.Rician(Tx_sig, n_var)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+    # channel_enc_output = model.blind_csi(channel_enc_output)
+
+    memory = model.channel_decoder(Rx_sig)
+
+    outputs = torch.ones(src.size(0), 1).fill_(start_symbol).type_as(src.data)
+
+    for i in range(max_len - 1):
+        # create the decode mask
+        trg_mask = (outputs == padding_idx).unsqueeze(-2).type(torch.FloatTensor)  # [batch, 1, seq_len]
+        look_ahead_mask = subsequent_mask(outputs.size(1)).type(torch.FloatTensor)
+        #        print(look_ahead_mask)
+        combined_mask = torch.max(trg_mask, look_ahead_mask)
+        combined_mask = combined_mask.to(device)
+
+        # decode the received signal
+        dec_output = model.decoder(outputs, memory, combined_mask, None)
+        pred = model.dense(dec_output)
+
+        # predict the word
+        prob = pred[:, -1:, :]  # (batch_size, 1, vocab_size), 取最后一个单词的预测概率
+        #         # prob = prob.squeeze()
+
+        # return the max-prob index
+        _, next_word = torch.max(prob, dim=-1)
+        # next_word = next_word.unsqueeze(1)
+
+        # next_word = next_word.data[0]
+        outputs = torch.cat([outputs, next_word], dim=1)
+
+    return outputs
+
+def train_mi(model, mi_net, src, n_var, padding_idx, opt, channel):
+    mi_net.train()
+    opt.zero_grad()
+    channels = Channels()
+    src_mask = (src == padding_idx).unsqueeze(-2).type(torch.FloatTensor).to(device)  # [batch, 1, seq_len]
+    enc_output = model.encoder(src, src_mask)
+    channel_enc_output = model.channel_encoder(enc_output)
+    Tx_sig = PowerNormalize(channel_enc_output)
+
+    if channel == 'AWGN':
+        Rx_sig = channels.AWGN(Tx_sig, n_var)
+    elif channel == 'Rayleigh':
+        Rx_sig = channels.Rayleigh(Tx_sig, n_var)
+    elif channel == 'Rician':
+        Rx_sig = channels.Rician(Tx_sig, n_var)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+    joint, marginal = sample_batch(Tx_sig, Rx_sig)
+    mi_lb, _, _ = mutual_information(joint, marginal, mi_net)
+    loss_mine = -mi_lb
+
+    loss_mine.backward()
+    torch.nn.utils.clip_grad_norm_(mi_net.parameters(), 10.0)
+    opt.step()
+
+    return loss_mine.item()
+
+
+class LabelSmoothing(nn.Module):
+    "Implement label smoothing."
+
+    def __init__(self, size, padding_idx, smoothing=0.0):
+        super(LabelSmoothing, self).__init__()
+        self.criterion = nn.CrossEntropyLoss()
+        self.padding_idx = padding_idx
+        self.confidence = 1.0 - smoothing
+        self.smoothing = smoothing
+        self.size = size
+        self.true_dist = None
+
+    def forward(self, x, target):
+        assert x.size(1) == self.size
+        true_dist = x.data.clone()
+        # 将数组全部填充为某一个值
+        true_dist.fill_(self.smoothing / (self.size - 2))
+        # 按照index将input重新排列
+        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+        # 第一行加入了<strat> 符号，不需要加入计算
+        true_dist[:, self.padding_idx] = 0  #
+        mask = torch.nonzero(target.data == self.padding_idx)
+        if mask.dim() > 0:
+            true_dist.index_fill_(0, mask.squeeze(), 0.0)
+        self.true_dist = true_dist
+        return self.criterion(x, true_dist)
+
+
+class NoamOpt:
+    "Optim wrapper that implements rate."
+
+    def __init__(self, model_size, factor, warmup, optimizer):
+        self.optimizer = optimizer
+        self._step = 0
+        self.warmup = warmup
+        self.factor = factor
+        self.model_size = model_size
+        self._rate = 0
+        self._weight_decay = 0
+
+    def step(self):
+        "Update parameters and rate"
+        self._step += 1
+        rate = self.rate()
+        weight_decay = self.weight_decay()
+        for p in self.optimizer.param_groups:
+            p['lr'] = rate
+            p['weight_decay'] = weight_decay
+        self._rate = rate
+        self._weight_decay = weight_decay
+        # update weights
+        self.optimizer.step()
+
+    def rate(self, step=None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+
+        # if step <= 3000 :
+        #     lr = 1e-3
+
+        # if step > 3000 and step <=9000:
+        #     lr = 1e-4
+
+        # if step>9000:
+        #     lr = 1e-5
+
+        lr = self.factor * \
+             (self.model_size ** (-0.5) *
+              min(step ** (-0.5), step * self.warmup ** (-1.5)))
+
+        return lr
+
+        # return lr
+
+    def weight_decay(self, step=None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+
+        if step <= 3000:
+            weight_decay = 1e-3
+
+        if step > 3000 and step <= 9000:
+            weight_decay = 0.0005
+
+        if step > 9000:
+            weight_decay = 1e-4
+
+        weight_decay = 0
+        return weight_decay
+
+
+class Channels():
+
+    def AWGN(self, Tx_sig, n_var):  # 参数分别是发送信号和噪声方差
+        Rx_sig = Tx_sig + torch.normal(0.0, n_var, size=Tx_sig.shape).to(device)
+        return Rx_sig  # 返回接收信号
+
+    def Rayleigh(self, Tx_sig, n_var):
+        shape = Tx_sig.shape
+        H_real = torch.normal(0, math.sqrt(1 / 2), size=[1]).to(device)
+        H_imag = torch.normal(0, math.sqrt(1 / 2), size=[1]).to(device)
+        H = torch.Tensor([[H_real, -H_imag], [H_imag, H_real]]).to(device)
+        Tx_sig = torch.matmul(Tx_sig.view(shape[0], -1, 2), H)
+        Rx_sig = self.AWGN(Tx_sig, n_var)
+        # Channel estimation
+        Rx_sig = torch.matmul(Rx_sig, torch.inverse(H)).view(shape)
+
+        return Rx_sig
+
+    def Rician(self, Tx_sig, n_var, K=1):
+        shape = Tx_sig.shape
+        mean = math.sqrt(K / (K + 1))
+        std = math.sqrt(1 / (K + 1))
+        H_real = torch.normal(mean, std, size=[1]).to(device)
+        H_imag = torch.normal(mean, std, size=[1]).to(device)
+        H = torch.Tensor([[H_real, -H_imag], [H_imag, H_real]]).to(device)
+        Tx_sig = torch.matmul(Tx_sig.view(shape[0], -1, 2), H)
+        Rx_sig = self.AWGN(Tx_sig, n_var)
+        # Channel estimation
+        Rx_sig = torch.matmul(Rx_sig, torch.inverse(H)).view(shape)
+
+        return Rx_sig
+
+
+def initNetParams(model):  # 初始化网络参数
+    '''Init net parameters.'''
+    for p in model.parameters():
+        if p.dim() > 1:  # 只对于维度大于1的参数进行初始化
+            nn.init.xavier_uniform_(p)  # Xavier初始化，训练的时候收敛更快更好
+    return model
+
+
+def subsequent_mask(size):
+    "Mask out subsequent positions."
+    attn_shape = (1, size, size)
+    # 产生下三角矩阵
+    subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
+    return torch.from_numpy(subsequent_mask)
+
+
+def create_masks(src, trg, padding_idx):  # 输入的128个句子，输入的128个去掉最后一个单词的句子，数字0
+    # print("src: ", src)
+    # print("trg: ", trg)
+    src_mask = (src == padding_idx).unsqueeze(-2).type(torch.FloatTensor)  # [batch, 1, seq_len]，
+    # print("src_mask: ", src_mask)  # 128x1x31，就是将src中各个句子 本来是一个数组[1,1,4,5,...]，现在变成了[[1,1,4,5,...]](加了一维)，且pad位置变成1，其余为0
+    trg_mask = (trg == padding_idx).unsqueeze(-2).type(torch.FloatTensor)  # [batch, 1, seq_len]
+    # print("trg_mask: ", trg_mask)  # 128x1x30，同上
+    look_ahead_mask = subsequent_mask(trg.size(-1)).type_as(trg_mask.data)
+    # print("look_ahead_mask: ", look_ahead_mask)  # 1x30x30，由一个30x30的矩阵构成，一个[上三角矩阵]，矩阵是2维，这里在最外边加了一个[]，矩阵第一行0,1,1,1,...;第二行0,0,1,1...;最后一行000000
+    combined_mask = torch.max(trg_mask, look_ahead_mask)
+    # print("combined_mask: ", combined_mask)  # 1x30x30，由30个30x30的矩阵构成
+
+    return src_mask.to(device), combined_mask.to(device)
+
+
+
+criterion = nn.CrossEntropyLoss(reduction='none').to(device)
+
+# 定义损失函数
+def loss_function(x, trg, padding_idx):
+    loss = criterion(x, trg)  # x与预期的交叉熵
+    mask = (trg != padding_idx).type_as(loss.data)  # mask去掉padding的部分
+    loss *= mask  # 将padding的部分的loss置为0，因为我们通常会使用填充标记来对齐不同长度的序列，但是这些填充部分不应该对损失产生影响
+
+    return loss.mean()  # 返回loss的平均值
+
+
+def PowerNormalize(x):
+    x_square = torch.mul(x, x)
+    power = torch.mean(x_square).sqrt()
+    if power > 1:
+        x = torch.div(x, power)
+
+    return x
