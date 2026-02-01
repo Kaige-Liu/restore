@@ -343,7 +343,7 @@ def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
 
     return (ct_normal + ct_eve1 + ct_eve2) / (normal.size(0) + eve1.size(0) + eve2.size(0))  # 返回总的准确率
 
-def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, pad, start_symbol, channel):
+def greedy_decode(schedule, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, pad, start_symbol, channel):
     trg_inp = src[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
     trg_real = src[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
     trg_inp_eve = src_eve[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
@@ -378,9 +378,7 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     freeze_net(Alice_mapping, False)
     freeze_net(Bob_mapping, False)
     freeze_net(Eve_mapping, False)
-    freeze_net(CAEM_with_SNR, False)
-    freeze_net(fms, False)
-    freeze_net(alice_verifier, False)
+    freeze_net(cdmodel, False)
 
     args.vocab_file = args.vocab_file
     vocab = json.load(open(args.vocab_file, 'rb'))
@@ -411,70 +409,63 @@ def greedy_decode(CAEM_with_SNR, fms, alice_verifier, args, deepsc, alice_bob_ma
     enc_output = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)  # f
     enc_output = enc_output[:, :31, :]  # 只前31个通道 f
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
-    semantic_mac = torch.cat([enc_output, mac], dim=1)
-    g = CAEM_with_SNR(enc_output, snr)  # alice得到的g
 
-    enc_output_eve = deepsc.encoder(src_eve, src_mask_eve, Eve_kb_final, Bob_mapping_final)  # f
-    enc_output_eve = enc_output_eve[:, :31, :]  # 只前31个通道
-    mac_eve = eve.mac_encoder(enc_output_eve, Eve_kb_final, Bob_mapping_final)
-    semantic_mac_eve = torch.cat([enc_output_eve, mac_eve], dim=1)
 
-    # enc_output_neg = deepsc.encoder(src_neg, src_mask_neg, Alice_kb_final, Bob_mapping_final)
-    # enc_output_neg = enc_output_neg[:, :31, :]  # 只前31个通道
-    # mac_neg = alice_bob_mac.mac_encoder(key_ebd, enc_output_neg, Alice_kb_final, Bob_mapping_final)
-    # semantic_mac_neg = torch.cat([enc_output_neg, mac_neg], dim=1)
+    bs, L, D = enc_output.shape
+    T = schedule.T
 
-    channel_enc_output = deepsc.channel_encoder(semantic_mac)
-    channel_enc_output_eve = deepsc.channel_encoder(semantic_mac_eve)
-    # channel_enc_output_neg = deepsc.channel_encoder(semantic_mac_neg)
-    Tx_sig = PowerNormalize(channel_enc_output)
-    Tx_sig_eve = PowerNormalize(channel_enc_output_eve)
-    # Tx_sig_neg = PowerNormalize(channel_enc_output_neg)
+    # 从纯噪声开始
+    f = torch.randn_like(enc_output)  # [bs, L, D] = f_T  需要改成\hat{f}
 
-    if channel == 'AWGN':
-        Rx_sig = channels.AWGN(Tx_sig, noise_std)
-        Rx_sig_eve = channels.AWGN(Tx_sig_eve, noise_std)
-    elif channel == 'Rayleigh':
-        Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
-        Rx_sig_eve = channels.Rayleigh(Tx_sig_eve, noise_std)
-        # Rx_sig_neg = channels.Rayleigh(Tx_sig_neg, noise_std)
-    elif channel == 'Rician':
-        Rx_sig = channels.Rician(Tx_sig, noise_std)
-        Rx_sig_eve = channels.Rician(Tx_sig_eve, noise_std)
-    else:
-        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
-    channel_dec_output = deepsc.channel_decoder(Rx_sig)
-    channel_dec_output_eve = deepsc.channel_decoder(Rx_sig_eve)
-    # channel_dec_output_neg = deepsc.channel_decoder(Rx_sig_neg)
-    f_p = channel_dec_output[:, :31, :]  # 前31个通道 发送的时候也是
-    f_eve_p = channel_dec_output_eve[:, :31, :]  # 前31个通道 发送的时候也是
-    # f_neg_p = channel_dec_output_neg[:, :31, :]  # 前31个通道 发送的时候也是
+    # 从 T-1 反向迭代到 0
+    for ti in reversed(range(T)):
+        t = torch.full((bs,), ti, device=enc_output.device, dtype=torch.long)  # [bs] 需要改成hat_f
 
-    # 下面就是那个映射
-    g_p = CAEM_with_SNR(f_p, snr)  # bob得到的g'
-    g_pp, Mk, ent, probs, onehot = fms(g_p, snr, tau=0.7, hard=True)  # 经过筛选的g'
+        beta_t = schedule.betas[ti]  # scalar
+        alpha_t = schedule.alphas[ti]  # scalar
+        alpha_bar_t = schedule.alpha_bars[ti]  # scalar
 
-    g_eve_p = CAEM_with_SNR(f_eve_p, snr)  # bob得到的g'
-    g_eve_pp, Mk_eve, ent_eve, probs_eve, onehot_eve = fms(g_eve_p, snr, tau=0.7, hard=True)  # 经过筛选的g_eve'
+        # 预测噪声
+        eps_pred = cdmodel(f_t=f, t=t, hat_f=enc_output)  # [bs,L,D]
 
-    # g_neg_p = CAEM_with_SNR(f_neg_p, snr)  # bob得到的g'
-    # g_neg_pp, Mk_neg, ent_neg, probs_neg, onehot_neg = fms(g_neg_p, snr, tau=0.7, hard=True)  # 经过筛选的g_neg'
+        # DDPM 计算均值
+        # mu = 1/sqrt(alpha_t) * ( f_t - beta_t/sqrt(1-alpha_bar_t) * eps_pred )
+        mu = (1.0 / torch.sqrt(alpha_t)) * (f - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred)
 
-    # 然后进行判别
-    logits = alice_verifier(g, g_pp)  # 判别结果
-    logits_eve = alice_verifier(g, g_eve_pp)  # 判别eve结果
-    # logits_neg = alice_verifier(g, g_neg_pp)  # 判别neg结果
+        if ti > 0:
+            # add noise z ~ N(0,I) for stochastic sampling 保持多样性
+            z = torch.randn_like(f)
+            # sigma_t = sqrt(beta_t)  # DDPM原始公式 控制噪声的大小
+            f = mu + torch.sqrt(beta_t) * z
+        else:
+            f = mu  # 最后一步不加噪声 保持稳定 确定性
 
-    pred_pos = (logits >= 0).float()  # [bs,1]
-    alice_1 = pred_pos.mean().item()  # 正样本正确率 = 预测为1的比例
+    # 这个f就是恢复的encoder_output了
+    outputs = torch.ones(src.size(0), 1).fill_(start_symbol).type_as(src.data)
 
-    pred_neg = (logits_eve >= 0).float()  # [bs,1]
-    eve_0 = (1.0 - pred_neg).mean().item()  # 负样本正确率 = 预测为0的比例
+    for i in range(max_len - 1):  # 下面就是解码
+        # create the decode mask
+        trg_mask = (outputs == pad).unsqueeze(-2).type(torch.FloatTensor).to(device)  # [batch, 1, seq_len]
+        look_ahead_mask = subsequent_mask(outputs.size(1)).type(torch.FloatTensor).to(device)
 
-    # pred_neg_neg = (logits_neg >= 0).float()  # [bs,1]
-    # neg_0 = (1.0 - pred_neg_neg).mean().item()  # 负样本正确率 = 预测为0的比例
+        combined_mask = torch.max(trg_mask, look_ahead_mask)
+        combined_mask = combined_mask.to(device)
 
-    return alice_1, eve_0
+        dec_output = deepsc.decoder(outputs, f, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac)
+        pred = deepsc.dense(dec_output)
+
+        # predict the word
+        prob = pred[:, -1:, :]  # (batch_size, 1, vocab_size), 取最后一个单词的预测概率
+        #         # prob = prob.squeeze()
+
+        # return the max-prob index
+        _, next_word = torch.max(prob, dim=-1)
+        # next_word = next_word.unsqueeze(1)
+
+        # next_word = next_word.data[0]
+        outputs = torch.cat([outputs, next_word], dim=1)  # [bs, 30]
+
+    return outputs
 
 def train_mi(model, mi_net, src, n_var, padding_idx, opt, channel):
     mi_net.train()
