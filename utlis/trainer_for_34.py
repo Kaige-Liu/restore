@@ -193,7 +193,7 @@ def train_step(schedule, cdmodel, args, epoch, batch, model, alice_bob_mac, key_
 
     channels = Channels()
     bs = args.batch_size
-    snr_min, snr_max = -5.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 20.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -237,13 +237,32 @@ def train_step(schedule, cdmodel, args, epoch, batch, model, alice_bob_mac, key_
 
     enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)  # f
     enc_output = enc_output[:, :31, :]  # 只前31个通道 f
+    mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
 
+    semantic_mac = torch.cat([enc_output, mac], dim=1)
+
+    channel_enc_output = model.channel_encoder(semantic_mac)
+    Tx_sig = PowerNormalize(channel_enc_output)
+
+    if channel == 'AWGN':
+        Rx_sig = channels.AWGN(Tx_sig, noise_std)  # 这个noise_std也是一个数
+    elif channel == 'Rayleigh':
+        Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
+    elif channel == 'Rician':
+        Rx_sig = channels.Rician(Tx_sig, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+    memory = model.channel_decoder(Rx_sig)
+
+    f_p = memory[:, :31, :]  # 前31个通道
+    mac_p = memory[:, 31:, :]  # 后31个通道
 
     t = schedule.sample_timesteps(bs)  # [bs]
-    eps = torch.randn_like(enc_output)  # [bs, L, D]
-    f_t = schedule.q_sample(f0=enc_output, t=t, eps=eps)  # [bs, L, D]
+    eps = torch.randn_like(f_p)  # [bs, L, D]
+    f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)  # [bs, L, D]
 
-    eps_pred = cdmodel(f_t=f_t, t=t, hat_f=enc_output)  # [bs, L, D]
+    eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p)  # [bs, L, D]
     loss = F.mse_loss(eps_pred, eps)
 
     opt_joint.zero_grad(set_to_none=True)
@@ -264,7 +283,7 @@ def val_step(schedule, cdmodel, args, batch, model, alice_bob_mac, key_ab, eve, 
 
     channels = Channels()
     bs = src.size(0)
-    snr_min, snr_max = -5.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    snr_min, snr_max = 20.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
@@ -311,12 +330,32 @@ def val_step(schedule, cdmodel, args, batch, model, alice_bob_mac, key_ab, eve, 
 
     enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)  # f
     enc_output = enc_output[:, :31, :]  # 只前31个通道 f
+    mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
+
+    semantic_mac = torch.cat([enc_output, mac], dim=1)
+
+    channel_enc_output = model.channel_encoder(semantic_mac)
+    Tx_sig = PowerNormalize(channel_enc_output)
+
+    if channel == 'AWGN':
+        Rx_sig = channels.AWGN(Tx_sig, noise_std)  # 这个noise_std也是一个数
+    elif channel == 'Rayleigh':
+        Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
+    elif channel == 'Rician':
+        Rx_sig = channels.Rician(Tx_sig, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+    memory = model.channel_decoder(Rx_sig)
+
+    f_p = memory[:, :31, :]  # 前31个通道
+    mac_p = memory[:, 31:, :]  # 后31个通道
 
     t = schedule.sample_timesteps(bs)  # [bs]
-    eps = torch.randn_like(enc_output)  # [bs, L, D]
-    f_t = schedule.q_sample(f0=enc_output, t=t, eps=eps)  # [bs, L, D]
+    eps = torch.randn_like(f_p)  # [bs, L, D]
+    f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)  # [bs, L, D]
 
-    eps_pred = cdmodel(f_t=f_t, t=t, hat_f=enc_output)  # [bs, L, D]
+    eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p)  # [bs, L, D]
     loss = F.mse_loss(eps_pred, eps)
 
     return loss.item()
@@ -410,23 +449,43 @@ def greedy_decode(schedule, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, A
     enc_output = enc_output[:, :31, :]  # 只前31个通道 f
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
 
+    semantic_mac = torch.cat([enc_output, mac], dim=1)
+
+    channel_enc_output = deepsc.channel_encoder(semantic_mac)
+    Tx_sig = PowerNormalize(channel_enc_output)
+
+    if channel == 'AWGN':
+        Rx_sig = channels.AWGN(Tx_sig, noise_std)  # 这个noise_std也是一个数
+    elif channel == 'Rayleigh':
+        Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
+    elif channel == 'Rician':
+        Rx_sig = channels.Rician(Tx_sig, noise_std)
+    else:
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
+
+    # channel_enc_output = model.blind_csi(channel_enc_output)
+
+    memory = deepsc.channel_decoder(Rx_sig)
+
+    f_p = memory[:, :31, :]  # 前31个通道
+    mac_p = memory[:, 31:, :]  # 后31个通道
 
     bs, L, D = enc_output.shape
     T = schedule.T
 
     # 从纯噪声开始
-    f = torch.randn_like(enc_output)  # [bs, L, D] = f_T  需要改成\hat{f}
+    f = torch.randn_like(f_p)  # [bs, L, D] = f_T  需要改成\hat{f}
 
     # 从 T-1 反向迭代到 0
     for ti in reversed(range(T)):
-        t = torch.full((bs,), ti, device=enc_output.device, dtype=torch.long)  # [bs] 需要改成hat_f
+        t = torch.full((bs,), ti, device=f_p.device, dtype=torch.long)  # [bs] 需要改成hat_f
 
         beta_t = schedule.betas[ti]  # scalar
         alpha_t = schedule.alphas[ti]  # scalar
         alpha_bar_t = schedule.alpha_bars[ti]  # scalar
 
         # 预测噪声
-        eps_pred = cdmodel(f_t=f, t=t, hat_f=enc_output)  # [bs,L,D]
+        eps_pred = cdmodel(f_t=f, t=t, hat_f=f_p)  # [bs,L,D]
 
         # DDPM 计算均值
         # mu = 1/sqrt(alpha_t) * ( f_t - beta_t/sqrt(1-alpha_bar_t) * eps_pred )
@@ -451,7 +510,7 @@ def greedy_decode(schedule, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, A
         combined_mask = torch.max(trg_mask, look_ahead_mask)
         combined_mask = combined_mask.to(device)
 
-        dec_output = deepsc.decoder(outputs, f, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac)
+        dec_output = deepsc.decoder(outputs, f, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p)
         pred = deepsc.dense(dec_output)
 
         # predict the word

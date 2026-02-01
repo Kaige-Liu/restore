@@ -387,7 +387,7 @@ if __name__ == '__main__':
     #                              lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
 
     # 下面就是训练deepsc模型
-    SNR = [0]  # 其实根本不用 因为都不过信道
+    SNR = [20]  # 其实根本不用 因为都不过信道
     for epoch in range(args.epochs):  # 默认训练完整的数据集80轮
         start = time.time()  # 记录每轮开始时间（没用到）
         record_loss = 1000  # 其实是loss，设置的大一点
