@@ -1287,16 +1287,6 @@ class CAEM_Fig2_SNR_1D(nn.Module):
         return z0
 
 
-# quick sanity check
-if __name__ == "__main__":
-    B = 5
-    x = torch.randn(B, 31, 128)
-    snr = torch.tensor([-5.0, 0.0, 5.0, 10.0, 15.0])  # [B]
-    model = CAEM_Fig2_SNR_1D(C_in=31, C_out=16, use_resnet=True)  # 只需要这里的C_out控制一下输出的通道数即可
-    y = model(x, snr)
-    print(y.shape)  # [bs, 16, 128]
-
-
 
 # 下面是特征选择模块
 # 计算特征图熵的近似值
@@ -1536,28 +1526,6 @@ class FeatureMapSelectionModule_SNR_AllC(nn.Module):
 
 
 
-
-
-
-# -------------------------
-# quick test
-# -------------------------
-if __name__ == "__main__":
-    B, C, L = 5, 16, 128
-    z0 = torch.randn(B, C, L)       # pretend this is CAEM output
-    snr = torch.tensor([0., 2., 5., 10., 15.])
-
-    fms = FeatureMapSelectionModule_SNR_AllC(C=C, hidden=64)
-    z1, Mk, ent, probs, onehot = fms(z0, snr, tau=0.7, hard=True)
-
-    print("z1:", z1.shape)  # [B,C,L]
-    print("Mk:", Mk.shape)  # [B,C,1]
-    # actual selected K per sample:
-    print("K per sample:", Mk.squeeze(-1).sum(dim=1))
-
-
-
-
 class Conv1dAggregator(nn.Module):
     """
     Lightweight 1D conv aggregator over token/length dimension L.
@@ -1665,18 +1633,260 @@ class VerificationDiscriminatorLN(nn.Module):
         return torch.sigmoid(logits)
 
 
-# quick sanity check
-if __name__ == "__main__":
-    B, C, L = 5, 8, 128
-    g = torch.randn(B, C, L)
-    g_hat = torch.randn(B, C, L)
-    # simulate pruning: many zeros
-    g_hat[:, 4:, :] = 0.0
 
-    D = VerificationDiscriminatorLN(C=C, L=L, output_logits=True)
-    logits = D(g, g_hat)
-    print("logits:", logits.shape)
-    criterion = nn.BCEWithLogitsLoss()  # 注意损失函数要用这个
-    logits = D(g, g_hat)  # [B,1]
-    label = torch.ones_like(logits)
-    loss = criterion(logits, label)
+# 下面是34的部分
+
+# =========================================================
+# 1) 扩散调度器：预先计算 beta / alpha / alpha_bar
+# =========================================================
+class DiffusionSchedule:
+    """
+    DDPM 中的扩散调度器（scheduler）
+
+    作用：
+        1. 定义每个时间步 t 的噪声强度 beta_t
+        2. 计算 alpha_t = 1 - beta_t
+        3. 计算累计乘积 alpha_bar_t = ∏_{i<=t} alpha_i
+
+    张量形状说明：
+        betas:      [T]
+        alphas:     [T]
+        alpha_bars: [T]
+    """
+    def __init__(self, T: int, beta_start=1e-4, beta_end=2e-2, device="cpu"):
+        self.T = T
+        self.device = device
+
+        # 线性增长的 beta（噪声强度）
+        betas = torch.linspace(beta_start, beta_end, T, device=device)  # [T]
+
+        # alpha = 1 - beta
+        alphas = 1.0 - betas                                             # [T]
+
+        # alpha_bar_t = alpha_1 * alpha_2 * ... * alpha_t
+        alpha_bars = torch.cumprod(alphas, dim=0)                        # [T]
+
+        self.betas = betas
+        self.alphas = alphas
+        self.alpha_bars = alpha_bars
+
+    def sample_timesteps(self, bs: int):
+        """
+        从 {0, 1, ..., T-1} 中均匀采样时间步 t
+
+        输入：
+            bs: batch size
+        输出：
+            t: [bs]，每个样本一个时间步（long 类型）
+        """
+        return torch.randint(
+            low=0,
+            high=self.T,
+            size=(bs,),
+            device=self.device,
+            dtype=torch.long
+        )
+
+    def q_sample(self, f0: torch.Tensor, t: torch.Tensor, eps: torch.Tensor):
+        """
+        前向扩散过程（加噪）：
+
+            f_t = sqrt(alpha_bar_t) * f0
+                + sqrt(1 - alpha_bar_t) * eps
+
+        输入：
+            f0:  [bs, L, D]   干净的语义特征（你的目标 f）
+            t:   [bs]         每个样本对应的时间步
+            eps: [bs, L, D]   标准高斯噪声 N(0, I)
+
+        输出：
+            f_t: [bs, L, D]   加噪后的特征
+        """
+        # 取出 batch 中每个样本对应的 alpha_bar_t
+        # 形状从 [bs] -> [bs, 1, 1]，方便和 [L, D] 广播
+        alpha_bar_t = self.alpha_bars[t].view(-1, 1, 1)
+
+        return (
+            torch.sqrt(alpha_bar_t) * f0
+            + torch.sqrt(1.0 - alpha_bar_t) * eps
+        )
+
+
+# =========================================================
+# 2) 时间步 t 的正弦时间嵌入（Sinusoidal Embedding）
+# =========================================================
+class SinusoidalTimeEmbedding(nn.Module):
+    """
+    将离散时间步 t 映射为连续向量（扩散模型标准做法）
+
+    输入：
+        t:   [bs]（long）
+    输出：
+        emb: [bs, time_dim]
+    """
+    def __init__(self, time_dim: int):
+        super().__init__()
+        self.time_dim = time_dim
+
+    def forward(self, t: torch.Tensor):
+        device = t.device
+        half = self.time_dim // 2
+
+        # 构造不同频率
+        freqs = torch.exp(
+            -math.log(10000)
+            * torch.arange(0, half, device=device).float()
+            / (half - 1)
+        )  # [half]
+
+        # t: [bs] -> [bs, 1]
+        args = t.float().unsqueeze(1) * freqs.unsqueeze(0)  # [bs, half]
+
+        # sin + cos 拼接
+        emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)  # [bs, time_dim]
+
+        # 如果 time_dim 是奇数，补 0
+        if self.time_dim % 2 == 1:
+            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=1)
+
+        return emb
+
+
+# =========================================================
+# 3) 条件去噪网络：预测噪声 eps
+# =========================================================
+class ConditionalDenoiser(nn.Module):
+    """
+    条件扩散模型的核心网络（去噪器）
+
+    输入：
+        f_t:   [bs, L, D]   被加噪后的特征
+        hat_f: [bs, L, D]   条件特征（经过信道的特征）
+        t:     [bs]         时间步
+
+    输出：
+        eps_pred: [bs, L, D]  预测的噪声
+    """
+    def __init__(
+        self,
+        feature_dim=128,   # D
+        model_dim=256,     # Transformer 内部维度
+        num_layers=4,
+        num_heads=8,
+        time_dim=256,
+        dropout=0.1
+    ):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.model_dim = model_dim
+
+        # 时间嵌入：t -> [bs, time_dim] -> [bs, model_dim]
+        self.time_embed = SinusoidalTimeEmbedding(time_dim)
+        self.time_mlp = nn.Sequential(
+            nn.Linear(time_dim, model_dim),
+            nn.SiLU(),
+            nn.Linear(model_dim, model_dim),
+        )
+
+        # 输入投影：
+        # concat([f_t, hat_f]) -> [bs, L, 2D] -> [bs, L, model_dim]
+        self.in_proj = nn.Linear(2 * feature_dim, model_dim)
+
+        # Transformer Encoder（沿着序列长度 L 建模）
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=model_dim,
+            nhead=num_heads,
+            dim_feedforward=model_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,   # 输入输出都是 [bs, L, dim]
+            norm_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
+        )
+
+        # 输出投影：预测噪声
+        self.out_proj = nn.Linear(model_dim, feature_dim)
+
+    def forward(self, f_t: torch.Tensor, t: torch.Tensor, hat_f: torch.Tensor):
+        """
+        前向传播
+
+        输入：
+            f_t:   [bs, L, D]
+            t:     [bs]
+            hat_f: [bs, L, D]
+
+        输出：
+            eps_pred: [bs, L, D]
+        """
+        bs, L, D = f_t.shape
+        assert hat_f.shape == (bs, L, D), "hat_f 的形状必须和 f_t 一致"
+
+        # 1) 拼接 noisy feature 和条件 feature
+        x = torch.cat([f_t, hat_f], dim=-1)   # [bs, L, 2D]
+
+        # 2) 投影到 Transformer 维度
+        x = self.in_proj(x)                   # [bs, L, model_dim]
+
+        # 3) 加上时间嵌入（对每个 token 广播）
+        t_emb = self.time_embed(t)            # [bs, time_dim]
+        t_emb = self.time_mlp(t_emb)          # [bs, model_dim]
+        x = x + t_emb.unsqueeze(1)            # [bs, L, model_dim]
+
+        # 4) Transformer 编码
+        x = self.encoder(x)                   # [bs, L, model_dim]
+
+        # 5) 输出预测噪声
+        eps_pred = self.out_proj(x)           # [bs, L, D]
+        return eps_pred
+
+
+
+# =========================================================
+# 5) 采样函数（从噪声恢复特征）
+# =========================================================
+@torch.no_grad()
+def diffusion_sample(model, schedule, hat_f, steps=None):
+    """
+    在给定条件 hat_f 的情况下，生成恢复后的特征 f_hat
+
+    输入：
+        hat_f: [bs, L, D]
+        steps: 反向扩散步数（默认用全部 T）
+
+    输出：
+        f_hat: [bs, L, D]
+    """
+    model.eval()
+    bs, L, D = hat_f.shape
+    T = schedule.T if steps is None else steps
+
+    # 从纯噪声开始
+    f = torch.randn_like(hat_f)  # f_T
+
+    # 从 T-1 反向迭代到 0
+    for ti in reversed(range(T)):
+        t = torch.full((bs,), ti, device=hat_f.device, dtype=torch.long)
+
+        beta_t = schedule.betas[ti]
+        alpha_t = schedule.alphas[ti]
+        alpha_bar_t = schedule.alpha_bars[ti]
+
+        # 预测噪声
+        eps_pred = model(f, t, hat_f)
+
+        # 计算均值
+        mu = (1.0 / torch.sqrt(alpha_t)) * (
+            f - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred
+        )
+
+        if ti > 0:
+            z = torch.randn_like(f)
+            f = mu + torch.sqrt(beta_t) * z
+        else:
+            f = mu
+
+    return f
