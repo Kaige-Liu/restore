@@ -9,6 +9,7 @@ import numpy as np
 from models.mutual_info import sample_batch, mutual_information
 import torch.nn.functional as F
 
+from models.transceiver import feature_stats
 from utlis.tools import SeqtoText, BleuScore
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -263,13 +264,23 @@ def train_step(schedule, cdmodel, args, epoch, batch, model, alice_bob_mac, key_
     f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)  # [bs, L, D]
 
     eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p)  # [bs, L, D]
-    loss = F.mse_loss(eps_pred, eps)
+
+    alpha_bar = schedule.alpha_bars[t].view(-1, 1, 1)
+    f0_pred = (f_t - torch.sqrt(1.0 - alpha_bar) * eps_pred) / torch.sqrt(alpha_bar)
+
+    loss_keep = F.mse_loss(f0_pred, f_p)
+
+    stats = feature_stats(f0_pred, f_p, prefix="train")
+
+    loss_eps = F.mse_loss(eps_pred, eps)
+
+    loss = loss_eps + 1.0 * loss_keep
 
     opt_joint.zero_grad(set_to_none=True)
     loss.backward()
     opt_joint.step()
 
-    return loss.item()
+    return loss_eps.item(), loss_keep.item(), stats
 
 
 def val_step(schedule, cdmodel, args, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, channel):  # 参数模型，发送的128个句子，发送的128个句子，噪声标准差(数字0.1)，数字0，信道类型
@@ -356,9 +367,16 @@ def val_step(schedule, cdmodel, args, batch, model, alice_bob_mac, key_ab, eve, 
     f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)  # [bs, L, D]
 
     eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p)  # [bs, L, D]
-    loss = F.mse_loss(eps_pred, eps)
+    alpha_bar = schedule.alpha_bars[t].view(-1, 1, 1)
+    f0_pred = (f_t - torch.sqrt(1.0 - alpha_bar) * eps_pred) / torch.sqrt(alpha_bar)
 
-    return loss.item()
+    loss_keep = F.mse_loss(f0_pred, f_p)
+
+    stats = feature_stats(f0_pred, f_p, prefix="test")
+
+    loss_eps = F.mse_loss(eps_pred, eps)
+
+    return loss_eps.item(), loss_keep.item(), stats
 
 
 def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率

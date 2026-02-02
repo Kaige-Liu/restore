@@ -1890,3 +1890,32 @@ def diffusion_sample(model, schedule, hat_f, steps=None):
             f = mu
 
     return f
+
+
+# debug用的一个函数
+@torch.no_grad()
+def feature_stats(f0_pred, f_p, prefix="train"):
+    """
+    f0_pred: [bs,L,D]  扩散模型估计的“干净特征”
+    f_p:     [bs,L,D]  你的 baseline 特征（hat_f）
+    """
+    # 1) L2 偏离（每个样本一个数，再求均值）
+    diff_l2 = (f0_pred - f_p).pow(2).mean(dim=(1,2)).sqrt().mean().item()
+
+    # 2) 预测特征的整体标准差（防止塌缩）
+    pred_std = f0_pred.std().item()
+
+    # 3) 幅度
+    pred_abs_mean = f0_pred.abs().mean().item()
+
+    # 4) cosine 相似度（把 [L,D] 展平再算）
+    a = f0_pred.reshape(f0_pred.size(0), -1)
+    b = f_p.reshape(f_p.size(0), -1)
+    cos = F.cosine_similarity(a, b, dim=1).mean().item()
+
+    return {
+        f"{prefix}/diff_l2": diff_l2,
+        f"{prefix}/pred_std": pred_std,
+        f"{prefix}/pred_abs_mean": pred_abs_mean,
+        f"{prefix}/cos": cos,
+    }

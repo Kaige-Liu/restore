@@ -69,6 +69,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
 
     batch = 0
     total_eps = 0
+    total_keep = 0
 
     noise_std = np.random.uniform(SNR_to_noise(3), SNR_to_noise(10), size=(1))  # 这里其实没用 但是保留吧
     # print("---------------------------noise_std---------------------------")
@@ -98,7 +99,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
                 )
             )
         else:
-            loss_eps = train_step(schedule, cdmodel,
+            loss_eps, loss_keep, status = train_step(schedule, cdmodel,
                                     args, epoch, batch, net,
                                     alice_bob_mac, key_ab, eve,
                                     Alice_KB, Bob_KB, Eve_KB,
@@ -110,6 +111,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
                                     args.channel)
 
             total_eps += loss_eps
+            total_keep += loss_keep
 
         batch += 1
 
@@ -118,7 +120,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
     print("loss_eps: ", total_eps / len(train_iterator))
     print("================train======================")
 
-    return total_eps / len(train_iterator)
+    return total_eps / len(train_iterator), total_keep / len(train_iterator), status
 
 def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):  # epoch表示正在验证的是第几轮
     test_iterator = return_iter(args, 'test')  # 从测试数据集中抓牌
@@ -141,6 +143,7 @@ def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Al
     pbar_eve_iter = iter(test_iterator_eve)
     batch = 0
     total_eps = 0
+    total_keep = 0
 
     with torch.no_grad():  # 不需要计算梯度，看牌前的常规操作，不用管
         for sents in pbar:  # 其实就是for data in dataloader,这是[128, 31]的张量
@@ -152,11 +155,12 @@ def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Al
                 pbar_eve_iter = iter(pbar_eve)
                 sents_eve = next(pbar_eve_iter).to(device)
 
-            loss_eps = val_step(schedule, cdmodel,
+            loss_eps, loss_keep, status = val_step(schedule, cdmodel,
                                             args, batch, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
                                                                                           sents, sents, sents_eve, 0.1, pad_idx, args.channel)
 
             total_eps += loss_eps
+            total_keep += loss_keep
             # pbar.set_description(  # 设置进度条的描述
             #     'Epoch: {};  Type: VAL; Loss: {:.5f}'.format(
             #         epoch + 1, loss_total
@@ -173,7 +177,7 @@ def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Al
     print("loss_eps_test: ", total_eps / len(test_iterator))
     print("================validate======================")
 
-    return total_eps / len(test_iterator)
+    return total_eps / len(test_iterator), total_keep / len(test_iterator), status
 
 
 
@@ -392,9 +396,9 @@ if __name__ == '__main__':
         start = time.time()  # 记录每轮开始时间（没用到）
         record_loss = 1000  # 其实是loss，设置的大一点
 
-        loss_eps = train(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
+        loss_eps, loss_keep, status = train(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
 
-        loss_eps_test = validate(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+        loss_eps_test, loss_keep_test, status_test = validate(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
 
         bleu_score = performance(schedule, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
         print("bleu_score: ", bleu_score)
@@ -408,3 +412,10 @@ if __name__ == '__main__':
 
         writer.add_scalar('Loss_eps', loss_eps, epoch)
         writer.add_scalar('Loss_eps_test', loss_eps_test, epoch)
+        writer.add_scalar('Loss_keep', loss_keep, epoch)
+        writer.add_scalar('Loss_keep_test', loss_keep_test, epoch)
+        writer.add_scalar('BLEU_score', bleu_score[0], epoch)
+        for key, value in status.items():
+            writer.add_scalar(key, value, epoch)
+        for key, value in status_test.items():
+            writer.add_scalar('Test_' + key, value, epoch)
