@@ -190,7 +190,7 @@ if __name__ == '__main__':
     ).to(device)
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
-    checkpoint_34 = torch.load(r'/root/autodl-tmp/restore/checkpoints/34/2026-02-02-06_37_46/checkpoint_399_0.8405_0.0004.pth')  # 12部分的那三个网络
+    checkpoint_34 = torch.load(r'/root/autodl-tmp/restore/checkpoints/34/2026-02-02-06_37_46/checkpoint_399_0.8405_0.0004.pth')  # 34部分的那三个网络
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']

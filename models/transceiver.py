@@ -1812,7 +1812,7 @@ class ConditionalDenoiser(nn.Module):
 
     def forward(self, f_t: torch.Tensor, t: torch.Tensor, hat_f: torch.Tensor):
         """
-        前向传播
+        预测噪声
 
         输入：
             f_t:   [bs, L, D]
@@ -1878,18 +1878,60 @@ def diffusion_sample(model, schedule, hat_f, steps=None):
         # 预测噪声
         eps_pred = model(f, t, hat_f)
 
-        # 计算均值
-        mu = (1.0 / torch.sqrt(alpha_t)) * (
-            f - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred
-        )
+        # DDPM 计算均值
+        # mu = 1/sqrt(alpha_t) * ( f_t - beta_t/sqrt(1-alpha_bar_t) * eps_pred )
+        mu = (1.0 / torch.sqrt(alpha_t)) * (f - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred)
 
         if ti > 0:
+            # add noise z ~ N(0,I) for stochastic sampling 保持多样性
             z = torch.randn_like(f)
-            f = mu + torch.sqrt(beta_t) * z
-        else:
+            # sigma_t = sqrt(beta_t)  # DDPM原始公式 控制噪声的大小
+            # f = mu + torch.sqrt(beta_t) * z
             f = mu
+        else:
+            f = mu  # 最后一步不加噪声 保持稳定 确定性
 
-    return f
+# 用下面这个完整的简化版DDIM采样替代上面的DDPM采样
+@torch.no_grad()
+def diffusion_sample_ddim_simple(model, schedule, hat_f):
+    """
+    简化版 DDIM 采样：
+    - 使用完整 T 步
+    - 确定性 (eta = 0)
+    - 接口和你原来的 diffusion_sample 完全一致
+    """
+    model.eval()
+    device = hat_f.device
+    bs, L, D = hat_f.shape
+
+    T = schedule.T
+    alpha_bars = schedule.alpha_bars.to(device)
+
+    # 从纯噪声开始
+    x = torch.randn_like(hat_f)  # x_T
+
+    # 从 T-1 -> 0
+    for t in reversed(range(T)):
+        t_batch = torch.full((bs,), t, device=device, dtype=torch.long)
+
+        a_t = alpha_bars[t]
+        a_prev = alpha_bars[t - 1] if t > 0 else torch.tensor(1.0, device=device)
+
+        # 预测噪声
+        eps_pred = model(f_t=x, t=t_batch, hat_f=hat_f)
+
+        # 反推 x0
+        x0_pred = (x - torch.sqrt(1.0 - a_t) * eps_pred) / torch.sqrt(a_t)
+
+        # DDIM 确定性更新
+        if t > 0:
+            x = torch.sqrt(a_prev) * x0_pred + torch.sqrt(1.0 - a_prev) * eps_pred
+        else:
+            x = x0_pred  # 最后一步
+
+    return x
+
+
 
 
 # debug用的一个函数
