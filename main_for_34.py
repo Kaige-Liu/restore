@@ -330,7 +330,7 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
     Eve_mapping = KB_Mapping().to(device)
 
-    T = 10
+    T = 200
     schedule = DiffusionSchedule(T=T, device=device)
     cdmodel = ConditionalDenoiser(
         feature_dim=128,
