@@ -56,7 +56,7 @@ def setup_seed(seed):  # 设置随机种子，根本没用
     torch.backends.cudnn.deterministic = True
 
 def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, mi_net=None):  # 当前训练的轮数，命令行参数，模型，互信息网络（默认是None，也就是不训互信息网络）
-    train_iterator = return_iter(args, 'train')  # 从训练数据集中抓牌，得到的是一个dataloader类型的对象（其实就是dataloder 用法完全一样）
+    train_iterator = return_iter_10(args, 'train')  # 从训练数据集中抓牌，得到的是一个dataloader类型的对象（其实就是dataloder 用法完全一样）
     print("len", len(train_iterator))
     train_iterator_eve = return_iter_eve(args, 'train')
     print("len", len(train_iterator_eve))
@@ -123,7 +123,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
     return total_eps / len(train_iterator), total_keep / len(train_iterator), status
 
 def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):  # epoch表示正在验证的是第几轮
-    test_iterator = return_iter(args, 'test')  # 从测试数据集中抓牌
+    test_iterator = return_iter_10(args, 'train')  # 从测试数据集中抓牌
     test_iterator_eve = return_iter_eve(args, 'test')
 
     net.eval()  # 将模型设置为验证模式
@@ -185,7 +185,7 @@ def performance(schedule, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve
     # similarity = Similarity(args.bert_config_path, args.bert_checkpoint_path, args.bert_dict_path)
     bleu_score_1gram = BleuScore(1, 0, 0, 0)
 
-    test_iterator = return_iter_10(args, 'test')
+    test_iterator = return_iter_10(args, 'train')
     test_iterator_eve = return_iter_eve(args, 'test')
     iter_eve = iter(test_iterator_eve)
 
@@ -330,7 +330,7 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
     Eve_mapping = KB_Mapping().to(device)
 
-    T = 200
+    T = 10
     schedule = DiffusionSchedule(T=T, device=device)
     cdmodel = ConditionalDenoiser(
         feature_dim=128,
