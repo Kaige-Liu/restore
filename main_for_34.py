@@ -9,12 +9,12 @@ import torch.nn as nn
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
-from models.transceiver import Key_net, Attacker, MAC, CAEM_Fig2_SNR_1D, FeatureMapSelectionModule_SNR_AllC, \
+from models.tranceiver_for_34 import Key_net, Attacker, MAC, CAEM_Fig2_SNR_1D, FeatureMapSelectionModule_SNR_AllC, \
     VerificationDiscriminatorLN, DiffusionSchedule, ConditionalDenoiser
 from utlis.tools import SNR_to_noise, SeqtoText, BleuScore
 from utlis.trainer_for_34 import initNetParams, train_step, val_step, train_mi, greedy_decode
 from dataset.dataloader import return_iter, return_iter_10, return_iter_eve
-from models.transceiver import DeepSC, KnowledgeBase, KB_Mapping
+from models.tranceiver_for_34 import DeepSC, KnowledgeBase, KB_Mapping
 from models.mutual_info import Mine
 from tqdm import tqdm
 
@@ -70,6 +70,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
     batch = 0
     total_eps = 0
     total_keep = 0
+    total_keep_k = 0
 
     noise_std = np.random.uniform(SNR_to_noise(3), SNR_to_noise(10), size=(1))  # 这里其实没用 但是保留吧
     # print("---------------------------noise_std---------------------------")
@@ -99,7 +100,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
                 )
             )
         else:
-            loss_eps, loss_keep, status = train_step(schedule, cdmodel,
+            loss_eps, loss_keep, loss_keep_k, status = train_step(schedule, cdmodel,
                                     args, epoch, batch, net,
                                     alice_bob_mac, key_ab, eve,
                                     Alice_KB, Bob_KB, Eve_KB,
@@ -112,6 +113,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
 
             total_eps += loss_eps
             total_keep += loss_keep
+            total_keep_k += loss_keep_k
 
         batch += 1
 
@@ -120,10 +122,10 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
     print("loss_eps: ", total_eps / len(train_iterator))
     print("================train======================")
 
-    return total_eps / len(train_iterator), total_keep / len(train_iterator), status
+    return total_eps / len(train_iterator), total_keep / len(train_iterator), total_keep_k / len(train_iterator), status
 
 def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):  # epoch表示正在验证的是第几轮
-    test_iterator = return_iter(args, 'test')  # 从测试数据集中抓牌
+    test_iterator = return_iter(args, 'train')  # 从测试数据集中抓牌
     test_iterator_eve = return_iter_eve(args, 'test')
 
     net.eval()  # 将模型设置为验证模式
@@ -185,7 +187,7 @@ def performance(schedule, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve
     # similarity = Similarity(args.bert_config_path, args.bert_checkpoint_path, args.bert_dict_path)
     bleu_score_1gram = BleuScore(1, 0, 0, 0)
 
-    test_iterator = return_iter_10(args, 'test')
+    test_iterator = return_iter(args, 'train')
     test_iterator_eve = return_iter_eve(args, 'test')
     iter_eve = iter(test_iterator_eve)
 
@@ -396,7 +398,7 @@ if __name__ == '__main__':
         start = time.time()  # 记录每轮开始时间（没用到）
         record_loss = 1000  # 其实是loss，设置的大一点
 
-        loss_eps, loss_keep, status = train(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
+        loss_eps, loss_keep, loss_keep_k, status = train(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
 
         loss_eps_test, loss_keep_test, status_test = validate(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
 
@@ -413,6 +415,7 @@ if __name__ == '__main__':
         writer.add_scalar('Loss_eps', loss_eps, epoch)
         writer.add_scalar('Loss_eps_test', loss_eps_test, epoch)
         writer.add_scalar('Loss_keep', loss_keep, epoch)
+        writer.add_scalar('Loss_keep_k', loss_keep_k, epoch)
         writer.add_scalar('Loss_keep_test', loss_keep_test, epoch)
         writer.add_scalar('BLEU_score', bleu_score[0], epoch)
         for key, value in status.items():

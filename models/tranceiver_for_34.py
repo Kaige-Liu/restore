@@ -21,6 +21,7 @@ import math
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+
 # 定义Key_net类
 class Key_net(nn.Module):
     def __init__(self, args):
@@ -141,7 +142,7 @@ class BLEU_predictor(nn.Module):  # 输入是[bs, 1, 128] [bs, 31, 128] [bs, 10,
         x1 = x1.view(-1, 1 * 128)  # 展平mac
         x2 = x2.view(-1, 31 * 128)  # 展平f
         x3 = x3.view(-1, 8 * 128)  # 展平alice知识库映射
-        x4 = x4.view(-1, 8 * 128)   # 展平bob知识库
+        x4 = x4.view(-1, 8 * 128)  # 展平bob知识库
 
         x1 = torch.relu(self.fc1(x1))  # 第一层激活函数
         x2 = torch.relu(self.fc2(x2))  # 第二层激活函数
@@ -154,6 +155,7 @@ class BLEU_predictor(nn.Module):  # 输入是[bs, 1, 128] [bs, 31, 128] [bs, 10,
         x = torch.relu(self.fc4(x))  # 第四层激活函数
         x = self.sigmoid(self.fc5(x))  # 输出层激活函数，输出BLEU值
         return x
+
 
 class KnowledgeBase_old(nn.Module):
     def __init__(self):
@@ -171,6 +173,7 @@ class KnowledgeBase_old(nn.Module):
         # 重塑成[bs, 8, 128]
         x = x.view(-1, 8, 128)
         return x
+
 
 # class KnowledgeBase(nn.Module):
 #     def __init__(self):
@@ -212,12 +215,12 @@ class KnowledgeBase(nn.Module):  # 没有bs 输入是一个[1, 128]的张量 输
         super(KnowledgeBase, self).__init__()
         # 核心：深度可分离卷积（3x3 DW + 1x1 PW）实现128→1024通道扩展
         # 无Batch维度，仅处理[1,128]输入
-        self.depthwise = nn.Conv2d(   # 下面的可以重复使用
+        self.depthwise = nn.Conv2d(  # 下面的可以重复使用
             in_channels=128,
             out_channels=128,
             kernel_size=3,  # 要求的3x3 DW卷积核
-            padding=1,      # 保证卷积后空间维度不变
-            groups=128,     # 深度卷积核心（逐通道）
+            padding=1,  # 保证卷积后空间维度不变
+            groups=128,  # 深度卷积核心（逐通道）
             bias=False
         )
         # 1x1 PW卷积：将128通道扩展到8*128=1024通道（实现1→8组的核心）
@@ -233,15 +236,15 @@ class KnowledgeBase(nn.Module):  # 没有bs 输入是一个[1, 128]的张量 输
         # 输入：[1, 128] → 适配卷积的4维输入 [128, 1, 1]（通道, 高, 宽）
         # 注：这里省略batch维度，直接按单样本处理
         x = x.unsqueeze(-1).unsqueeze(-1)  # [1,128] → [1,128,1,1] → 挤压为[128,1,1]
-        x = x.squeeze(0)                   # 去掉多余的第0维 → [128,1,1]
+        x = x.squeeze(0)  # 去掉多余的第0维 → [128,1,1]
 
         # 深度可分离卷积：特征变换+通道扩展
-        x = self.relu(self.depthwise(x))   # [128,1,1] → 维度不变
-        x = self.relu(self.pointwise(x))   # [128,1,1] → [1024,1,1]
+        x = self.relu(self.depthwise(x))  # [128,1,1] → 维度不变
+        x = self.relu(self.pointwise(x))  # [128,1,1] → [1024,1,1]
 
         # 维度重塑：[1024,1,1] → [8,128]
-        x = x.flatten()                    # 展平为[1024]
-        x = x.view(8, 128)                 # 拆分为8组×128维
+        x = x.flatten()  # 展平为[1024]
+        x = x.view(8, 128)  # 拆分为8组×128维
 
         return x
 
@@ -376,6 +379,7 @@ class DeepSC(nn.Module):
 
         self.dense = nn.Linear(d_model, trg_vocab_size)  # 输出层
 
+
 class MAC(nn.Module):
     def __init__(self):
         super(MAC, self).__init__()
@@ -461,7 +465,6 @@ class NoiseNet(nn.Module):  # 输入输出都是[bs, 32, 16] 模拟噪声网络 
         return x
 
 
-
 class Burst(nn.Module):
     def __init__(self, input_dim=16, hidden_dim=32, seq_len=32):  # 添加seq_len参数
         super(Burst, self).__init__()
@@ -514,6 +517,7 @@ class Burst(nn.Module):
     #
     #     return output
 
+
 class Attacker(nn.Module):
     def __init__(self):
         super(Attacker, self).__init__()
@@ -533,6 +537,7 @@ class tmp_full(nn.Module):  # 将1维度的展成48维度的 便于计算B2
         x = self.fc(x)  # 全连接层
         x = x.view(batch_size, 48, 31, 128)  # 恢复维度
         return x
+
 
 # class Hiding(nn.Module):
 #     def __init__(self, N):
@@ -555,31 +560,29 @@ class H_DeepSC(nn.Module):  # 没用了
         self.hiding = Hiding(N)
 
 
-
-
-
-
 class PositionalEncoding(nn.Module):
     "Implement the PE function."
+
     def __init__(self, d_model, dropout, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
-        
+
         # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len).unsqueeze(1) # [max_len, 1]
+        position = torch.arange(0, max_len).unsqueeze(1)  # [max_len, 1]
         div_term = torch.exp(torch.arange(0, d_model, 2) *
-                             -(math.log(10000.0) / d_model)) #math.log(math.exp(1)) = 1
+                             -(math.log(10000.0) / d_model))  # math.log(math.exp(1)) = 1
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0) #[1, max_len, d_model]
+        pe = pe.unsqueeze(0)  # [1, max_len, d_model]
         self.register_buffer('pe', pe)
-        
+
     def forward(self, x):
         x = x + self.pe[:, :x.size(1)]
         x = self.dropout(x)
         return x
-  
+
+
 class MultiHeadedAttention(nn.Module):
     def __init__(self, num_heads, d_model, dropout=0.1):
         "Take in model size and number of heads."
@@ -588,65 +591,67 @@ class MultiHeadedAttention(nn.Module):
         # We assume d_v always equals d_k
         self.d_k = d_model // num_heads
         self.num_heads = num_heads
-        
+
         self.wq = nn.Linear(d_model, d_model)
         self.wk = nn.Linear(d_model, d_model)
         self.wv = nn.Linear(d_model, d_model)
-        
+
         self.dense = nn.Linear(d_model, d_model)
-        
-        #self.linears = clones(nn.Linear(d_model, d_model), 4)
+
+        # self.linears = clones(nn.Linear(d_model, d_model), 4)
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
-        
+
     def forward(self, query, key, value, mask=None):
         "Implements Figure 2"
         if mask is not None:
             # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)
         nbatches = query.size(0)
-        
-        # 1) Do all the linear projections in batch from d_model => h x d_k 
+
+        # 1) Do all the linear projections in batch from d_model => h x d_k
         query = self.wq(query).view(nbatches, -1, self.num_heads, self.d_k)
         query = query.transpose(1, 2)
-        
+
         key = self.wk(key).view(nbatches, -1, self.num_heads, self.d_k)
         key = key.transpose(1, 2)
-        
+
         value = self.wv(value).view(nbatches, -1, self.num_heads, self.d_k)
         value = value.transpose(1, 2)
-        
+
         #        query, key, value = \
         #            [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
         #             for l, x in zip(self.linears, (query, key, value))]
-        
-        # 2) Apply attention on all the projected vectors in batch. 
+
+        # 2) Apply attention on all the projected vectors in batch.
         x, self.attn = self.attention(query, key, value, mask=mask)
-        
-        # 3) "Concat" using a view and apply a final linear. 
+
+        # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous() \
-             .view(nbatches, -1, self.num_heads * self.d_k)
-             
+            .view(nbatches, -1, self.num_heads * self.d_k)
+
         x = self.dense(x)
         x = self.dropout(x)
-        
+
         return x
-    
+
     def attention(self, query, key, value, mask=None):
         "Compute 'Scaled Dot Product Attention'"
         d_k = query.size(-1)
         scores = torch.matmul(query, key.transpose(-2, -1)) \
                  / math.sqrt(d_k)
-        #print(mask.shape)
+        # print(mask.shape)
         if mask is not None:
-            # 根据mask，指定位置填充 -1e9  
+            # 根据mask，指定位置填充 -1e9
             scores += (mask * -1e9)
             # attention weights
-        p_attn = F.softmax(scores, dim = -1)
+        p_attn = F.softmax(scores, dim=-1)
         return torch.matmul(p_attn, value), p_attn
-    
+
+
 class PositionwiseFeedForward(nn.Module):
     "Implements FFN equation."
+
     def __init__(self, d_model, d_ff, dropout=0.1):
         super(PositionwiseFeedForward, self).__init__()
         self.w_1 = nn.Linear(d_model, d_ff)
@@ -657,10 +662,11 @@ class PositionwiseFeedForward(nn.Module):
         x = self.w_1(x)
         x = F.relu(x)
         x = self.w_2(x)
-        x = self.dropout(x) 
+        x = self.dropout(x)
         return x
 
-#class LayerNorm(nn.Module):
+
+# class LayerNorm(nn.Module):
 #    "Construct a layernorm module (See citation for details)."
 #    # features = d_model
 #    def __init__(self, features, eps=1e-6):
@@ -673,72 +679,75 @@ class PositionwiseFeedForward(nn.Module):
 #        mean = x.mean(-1, keepdim=True)
 #        std = x.std(-1, keepdim=True)
 #        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
-    
-    
+
+
 class EncoderLayer(nn.Module):
     "Encoder is made up of self-attn and feed forward (defined below)"
-    def __init__(self, d_model, num_heads, dff, dropout = 0.1):
+
+    def __init__(self, d_model, num_heads, dff, dropout=0.1):
         super(EncoderLayer, self).__init__()
-        
-        self.mha = MultiHeadedAttention(num_heads, d_model, dropout = 0.1)
-        self.ffn = PositionwiseFeedForward(d_model, dff, dropout = 0.1)
-        
+
+        self.mha = MultiHeadedAttention(num_heads, d_model, dropout=0.1)
+        self.ffn = PositionwiseFeedForward(d_model, dff, dropout=0.1)
+
         self.layernorm1 = nn.LayerNorm(d_model, eps=1e-6)
         self.layernorm2 = nn.LayerNorm(d_model, eps=1e-6)
-        
 
     def forward(self, x, mask):
         "Follow Figure 1 (left) for connections."
         attn_output = self.mha(x, x, x, mask)
         x = self.layernorm1(x + attn_output)
-        
+
         ffn_output = self.ffn(x)
         x = self.layernorm2(x + ffn_output)
-        
+
         return x
-    
+
+
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
+
     def __init__(self, d_model, num_heads, dff, dropout):
         super(DecoderLayer, self).__init__()
-        self.self_mha = MultiHeadedAttention(num_heads, d_model, dropout = 0.1)
-        self.src_mha = MultiHeadedAttention(num_heads, d_model, dropout = 0.1)
-        self.ffn = PositionwiseFeedForward(d_model, dff, dropout = 0.1)
-        
+        self.self_mha = MultiHeadedAttention(num_heads, d_model, dropout=0.1)
+        self.src_mha = MultiHeadedAttention(num_heads, d_model, dropout=0.1)
+        self.ffn = PositionwiseFeedForward(d_model, dff, dropout=0.1)
+
         self.layernorm1 = nn.LayerNorm(d_model, eps=1e-6)
         self.layernorm2 = nn.LayerNorm(d_model, eps=1e-6)
         self.layernorm3 = nn.LayerNorm(d_model, eps=1e-6)
-        
-        #self.sublayer = clones(SublayerConnection(size, dropout), 3)
- 
+
+        # self.sublayer = clones(SublayerConnection(size, dropout), 3)
+
     def forward(self, x, memory, look_ahead_mask, trg_padding_mask):
         "Follow Figure 1 (right) for connections."
-        #m = memory
-        
+        # m = memory
+
         attn_output = self.self_mha(x, x, x, look_ahead_mask)
         x = self.layernorm1(x + attn_output)
-        
-        src_output = self.src_mha(x, memory, memory, trg_padding_mask) # q, k, v
+
+        src_output = self.src_mha(x, memory, memory, trg_padding_mask)  # q, k, v
         x = self.layernorm2(x + src_output)
-        
+
         fnn_output = self.ffn(x)
         x = self.layernorm3(x + fnn_output)
         return x
 
-    
+
 class Encoder(nn.Module):  # This is the encoder of transformer
     "Core encoder is a stack of N layers"
+
     def __init__(self, num_layers, src_vocab_size, max_len,
-                 d_model, num_heads, dff, dropout = 0.1):
+                 d_model, num_heads, dff, dropout=0.1):
         super(Encoder, self).__init__()
-        
+
         self.d_model = d_model
         self.embedding = nn.Embedding(src_vocab_size, d_model)
         self.pos_encoding = PositionalEncoding(d_model, dropout, max_len)
-        self.enc_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, dff, dropout) 
-                                            for _ in range(num_layers)])
-        
-    def forward(self, x, src_mask, Alice_ID, Bob_ID):    # ID is float
+        self.enc_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, dff, dropout)
+                                         for _ in range(num_layers)])
+
+    def forward(self, x, src_mask, Alice_ID, Bob_ID):  # ID is float
         "Pass the input (and mask) through each layer in turn."
         # the input size of x is [batch_size, seq_len]
         x = self.embedding(x) * math.sqrt(self.d_model)
@@ -755,19 +764,19 @@ class Encoder(nn.Module):  # This is the encoder of transformer
 
         return x
 
+
 class Decoder(nn.Module):
     def __init__(self, num_layers, trg_vocab_size, max_len,
-                 d_model, num_heads, dff, dropout = 0.1):
+                 d_model, num_heads, dff, dropout=0.1):
         super(Decoder, self).__init__()
-        
+
         self.d_model = d_model
         self.embedding = nn.Embedding(trg_vocab_size, d_model)
         self.pos_encoding = PositionalEncoding(d_model, dropout, max_len)
-        self.dec_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, dff, dropout) 
-                                            for _ in range(num_layers)])
-    
+        self.dec_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, dff, dropout)
+                                         for _ in range(num_layers)])
+
     def forward(self, x, memory, look_ahead_mask, trg_padding_mask, Alice_kb_final, Bob_kb_final, mac):
-        
         x = self.embedding(x)
         x = self.pos_encoding(x)
         memory = torch.cat((memory, Alice_kb_final, Bob_kb_final, mac), 1)
@@ -778,58 +787,38 @@ class Decoder(nn.Module):
         mac_mask = torch.zeros(x.size(0), 1, 1).to(device)
         mask = torch.cat((trg_padding_mask, Alice_KB_mask, Bob_KB_mask, mac_mask), 2)
 
-        
         for dec_layer in self.dec_layers:
             x = dec_layer(x, memory, look_ahead_mask, mask)
-            
+
         return x
 
 
 class ChannelDecoder(nn.Module):
     def __init__(self, in_features, size1, size2):
         super(ChannelDecoder, self).__init__()
-        
+
         self.linear1 = nn.Linear(in_features, size1)
         self.linear2 = nn.Linear(size1, size2)
         self.linear3 = nn.Linear(size2, size1)
         # self.linear4 = nn.Linear(size1, d_model)
-        
+
         self.layernorm = nn.LayerNorm(size1, eps=1e-6)
-        
+
     def forward(self, x):
         x1 = self.linear1(x)
         x2 = F.relu(x1)
         x3 = self.linear2(x2)
         x4 = F.relu(x3)
         x5 = self.linear3(x4)
-        
+
         output = self.layernorm(x1 + x5)
 
         return output
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 class LinearAttention(nn.Module):
     """线性多头注意力（轻量级，2头）+ 残差+LayerNorm"""
+
     def __init__(self, head=2, d_model=128):
         super().__init__()
         self.head = head
@@ -890,7 +879,7 @@ class FusionLayer(nn.Module):
         for feat in modalities:
             # feat: [bs,1,128] → 转置为[bs,128,1]（Conv1d输入格式）
             feat_conv = feat.transpose(1, 2)  # [bs,128,1]
-            w = self.weight_conv(feat_conv)   # [bs,1,1]
+            w = self.weight_conv(feat_conv)  # [bs,1,1]
             weights.append(w)  # 每个权重：[bs,1,1]
 
         # 2. Softmax归一化权重
@@ -903,7 +892,7 @@ class FusionLayer(nn.Module):
             # 模态特征：[bs,1,128] → [bs,128,1]
             feat = modalities[i].transpose(1, 2)
             # 对应权重：[bs,3,1] → 取第i个权重，形状[bs,1,1]
-            w = weights[:, i:i+1, :]  # 关键：保持维度为[bs,1,1]
+            w = weights[:, i:i + 1, :]  # 关键：保持维度为[bs,1,1]
             # 相乘：[bs,128,1] * [bs,1,1] → 广播匹配
             weighted_sum += feat * w
 
@@ -915,6 +904,7 @@ class FusionLayer(nn.Module):
 
 class MAC_generate(nn.Module):
     """整体网络：k/f/kb+kb_M处理 + 融合输出"""
+
     def __init__(self):
         super(MAC_generate, self).__init__()
         # 1. k的处理：深度可分离卷积
@@ -992,6 +982,7 @@ class MAC_generate(nn.Module):
 
 class MAC_verify(nn.Module):
     """扩展版：新增IBSID输入 + 输出[bs,2]（Sigmoid激活）"""
+
     def __init__(self):
         super(MAC_verify, self).__init__()
         # 1. 复用原网络的k处理模块
@@ -1067,13 +1058,6 @@ class MAC_verify(nn.Module):
         return out
 
 
-
-
-
-
-
-
-
 # 12部分
 # 对SNR进行形状检查和调整的辅助函数
 import torch
@@ -1097,6 +1081,7 @@ class ResNetBlock1D(nn.Module):
     ResNet block on 1D length dimension.
     Input/Output: x [B, C, L]
     """
+
     def __init__(self, C: int, kernel_size: int = 3):
         super().__init__()
         padding = (kernel_size - 1) // 2
@@ -1120,6 +1105,7 @@ class ChannelAttentionSNR(nn.Module):
     snr: [B] or [B,1]
     out: [B, C, L]
     """
+
     def __init__(self, C: int, reduction: int = 8):
         super().__init__()
         hidden = max(C // reduction, 4)
@@ -1134,8 +1120,8 @@ class ChannelAttentionSNR(nn.Module):
         snr = _snr_to_B1(snr)  # [B,1]
 
         # CBAM-CA uses avg & max pooling over spatial/length dim
-        x_avg = x.mean(dim=-1)       # [B,C]
-        x_max = x.amax(dim=-1)       # [B,C]
+        x_avg = x.mean(dim=-1)  # [B,C]
+        x_max = x.amax(dim=-1)  # [B,C]
 
         v_avg = torch.cat([x_avg, snr], dim=-1)  # [B,C+1]
         v_max = torch.cat([x_max, snr], dim=-1)
@@ -1151,6 +1137,7 @@ class SpatialAttention1D(nn.Module):
     x:   [B, C, L]
     out: [B, C, L]
     """
+
     def __init__(self, kernel_size: int = 7):
         super().__init__()
         padding = (kernel_size - 1) // 2
@@ -1160,8 +1147,8 @@ class SpatialAttention1D(nn.Module):
         # CBAM-SA: avg & max over channels -> [B,1,L], then conv -> [B,1,L]
         x_avg = x.mean(dim=1, keepdim=True)  # [B,1,L]
         x_max = x.amax(dim=1, keepdim=True)  # [B,1,L]
-        m = torch.cat([x_avg, x_max], dim=1) # [B,2,L]
-        w = torch.sigmoid(self.conv(m))      # [B,1,L]
+        m = torch.cat([x_avg, x_max], dim=1)  # [B,2,L]
+        w = torch.sigmoid(self.conv(m))  # [B,1,L]
         return x * w
 
 
@@ -1169,6 +1156,7 @@ class CBAM_SNR_1D(nn.Module):
     """
     CBAM = CA(SNR) -> SA
     """
+
     def __init__(self, C: int, ca_reduction: int = 8, sa_kernel: int = 7):
         super().__init__()
         self.ca = ChannelAttentionSNR(C=C, reduction=ca_reduction)
@@ -1193,6 +1181,7 @@ class CCAM_SNR(nn.Module):
     snr: [B] or [B,1]
     out: [B, C, L]
     """
+
     def __init__(self, C: int, hidden: int = 64):
         super().__init__()
         in_dim = C + 1
@@ -1211,11 +1200,11 @@ class CCAM_SNR(nn.Module):
         B, C, L = x.shape
         snr = _snr_to_B1(snr)
 
-        x_pool = x.mean(dim=-1)                # [B,C]
-        cond = torch.cat([x_pool, snr], dim=-1) # [B,C+1]
+        x_pool = x.mean(dim=-1)  # [B,C]
+        cond = torch.cat([x_pool, snr], dim=-1)  # [B,C+1]
 
-        g = self.gamma(cond).unsqueeze(-1)     # [B,C,1]
-        b = self.beta(cond).unsqueeze(-1)      # [B,C,1]
+        g = self.gamma(cond).unsqueeze(-1)  # [B,C,1]
+        b = self.beta(cond).unsqueeze(-1)  # [B,C,1]
         return g * x + b
 
 
@@ -1230,13 +1219,14 @@ class CAEMBlock(nn.Module):
     x:   [B,C,L]
     snr: [B] or [B,1]
     """
+
     def __init__(
-        self,
-        C: int,
-        use_resnet: bool = False,
-        ca_reduction: int = 8,
-        sa_kernel: int = 7,
-        ccam_hidden: int = 64,
+            self,
+            C: int,
+            use_resnet: bool = False,
+            ca_reduction: int = 8,
+            sa_kernel: int = 7,
+            ccam_hidden: int = 64,
     ):
         super().__init__()
         self.use_resnet = use_resnet
@@ -1262,14 +1252,15 @@ class CAEM_Fig2_SNR_1D(nn.Module):
     Output:
       z0  [B, C_out, L]
     """
+
     def __init__(
-        self,
-        C_in: int = 31,
-        C_out: int = 16,          # 对应论文 256->16 的“压通道”思想，你可改成 31 保持不变
-        use_resnet: bool = False, # 你说 resnet 可能不需要，就设 False
-        ca_reduction: int = 8,
-        sa_kernel: int = 7,
-        ccam_hidden: int = 64,
+            self,
+            C_in: int = 31,
+            C_out: int = 16,  # 对应论文 256->16 的“压通道”思想，你可改成 31 保持不变
+            use_resnet: bool = False,  # 你说 resnet 可能不需要，就设 False
+            ca_reduction: int = 8,
+            sa_kernel: int = 7,
+            ccam_hidden: int = 64,
     ):
         super().__init__()
         self.block1 = CAEMBlock(C=C_in, use_resnet=use_resnet,
@@ -1285,7 +1276,6 @@ class CAEM_Fig2_SNR_1D(nn.Module):
         x = self.block2(x, snr)
         z0 = self.final_conv(x)
         return z0
-
 
 
 # 下面是特征选择模块
@@ -1328,6 +1318,7 @@ class PolicyNetwork_SNR_AllC(nn.Module):
       - probs  : [B, C+1]       (soft action probabilities)
       - onehot : [B, C+1]       (sampled action, one-hot)
     """
+
     def __init__(self, C: int, hidden: int = 128):
         super().__init__()
         self.C = C
@@ -1376,8 +1367,8 @@ class PolicyNetwork_SNR_AllC(nn.Module):
         # concat SNR -> [B,C+1]
         feat = torch.cat([pooled, snr], dim=-1)
 
-        logits = self.mlp(feat)              # [B,C+1]
-        probs = F.softmax(logits, dim=-1)    # [B,C+1]
+        logits = self.mlp(feat)  # [B,C+1]
+        probs = F.softmax(logits, dim=-1)  # [B,C+1]
 
         # Gumbel-Softmax sampling (differentiable)
         onehot = F.gumbel_softmax(logits, tau=tau, hard=hard, dim=-1)  # [B,C+1]
@@ -1385,7 +1376,6 @@ class PolicyNetwork_SNR_AllC(nn.Module):
         # convert to thermometer mask over C channels
         Mk = self.onehot_to_thermometer(onehot)  # [B,C,1]
         return Mk, probs, onehot
-
 
 
 class FeatureMapSelectionModule_SNR_AllC(nn.Module):
@@ -1403,6 +1393,7 @@ class FeatureMapSelectionModule_SNR_AllC(nn.Module):
       ent   : [B,C,1]
       probs : [B,C+1]
     """
+
     def __init__(self, C: int, hidden: int = 128):
         super().__init__()
         self.C = C
@@ -1432,6 +1423,7 @@ class FeatureMapSelectionModule_SNR_AllC(nn.Module):
         # Apply mask to ALL channels
         z1 = z0 * Mk  # broadcast over L -> [B,C,L]
         return z1, Mk, ent, probs, onehot
+
 
 # # 如果是前一半必选 后一半可选的策略网络
 # class PolicyHalfPrefix(nn.Module):
@@ -1524,14 +1516,13 @@ class FeatureMapSelectionModule_SNR_AllC(nn.Module):
 #         return z1, Mk, ent, probs, onehot
 
 
-
-
 class Conv1dAggregator(nn.Module):
     """
     Lightweight 1D conv aggregator over token/length dimension L.
     Input:  m: [B, 2C, L]
     Output: v: [B, H]
     """
+
     def __init__(self, in_channels: int, hidden_channels: int = 64, num_layers: int = 3, kernel_size: int = 3):
         super().__init__()
         assert num_layers >= 1
@@ -1548,9 +1539,10 @@ class Conv1dAggregator(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, m: torch.Tensor) -> torch.Tensor:
-        h = self.net(m)      # [B, H, L]
-        v = h.mean(dim=-1)   # [B, H]
+        h = self.net(m)  # [B, H, L]
+        v = h.mean(dim=-1)  # [B, H]
         return v
+
 
 # alice的分类网络，第一步是算差异与乘积（捕捉哪里一样和哪里不一样），然后conv1d聚合，最后mlp分类
 class VerificationDiscriminatorLN(nn.Module):
@@ -1563,16 +1555,17 @@ class VerificationDiscriminatorLN(nn.Module):
     Output:
         logits or probability of "legitimate"
     """
+
     def __init__(
-        self,
-        C: int,
-        L: int = 128,
-        agg_hidden: int = 64,
-        agg_layers: int = 3,
-        agg_kernel: int = 3,
-        mlp_hidden: int = 64,
-        output_logits: bool = True,
-        eps: float = 1e-5,
+            self,
+            C: int,
+            L: int = 128,
+            agg_hidden: int = 64,
+            agg_layers: int = 3,
+            agg_kernel: int = 3,
+            mlp_hidden: int = 64,
+            output_logits: bool = True,
+            eps: float = 1e-5,
     ):
         super().__init__()
         self.C = C
@@ -1610,7 +1603,7 @@ class VerificationDiscriminatorLN(nn.Module):
     def forward(self, g: torch.Tensor, g_hat: torch.Tensor) -> torch.Tensor:
         assert g.dim() == 3 and g_hat.dim() == 3, "g and g_hat must be [B, C, L]"
         B, C, L = g.shape
-        assert g_hat.shape == (B, C, L), f"g_hat must match g. got {g_hat.shape}, expected {(B,C,L)}"
+        assert g_hat.shape == (B, C, L), f"g_hat must match g. got {g_hat.shape}, expected {(B, C, L)}"
         assert C == self.C, f"Expected C={self.C}, got C={C}"
         assert L == self.L, f"Expected L={self.L}, got L={L}"
 
@@ -1619,101 +1612,190 @@ class VerificationDiscriminatorLN(nn.Module):
         g_hat_n = self._tokenwise_channel_ln(g_hat)
 
         # 1) token-wise matching features
-        diff = torch.abs(g_n - g_hat_n)     # [B,C,L]
-        prod = g_n * g_hat_n                # [B,C,L]
+        diff = torch.abs(g_n - g_hat_n)  # [B,C,L]
+        prod = g_n * g_hat_n  # [B,C,L]
         m = torch.cat([diff, prod], dim=1)  # [B,2C,L]
 
         # 2) Conv1d aggregation over L
-        v = self.aggregator(m)              # [B, agg_hidden]
+        v = self.aggregator(m)  # [B, agg_hidden]
 
         # 3) MLP head
-        logits = self.mlp(v)                # [B,1]
+        logits = self.mlp(v)  # [B,1]
         if self.output_logits:
             return logits
         return torch.sigmoid(logits)
 
 
-
 # 下面是34的部分
 
-# =========================================================
-# 1) 扩散调度器：预先计算 beta / alpha / alpha_bar
-# =========================================================
+import math
+import torch
+import torch.nn as nn
+
+# =========================
+# 1) SCHEDULE: 修正索引约定 + 可选 cosine
+# =========================
 class DiffusionSchedule:
     """
-    DDPM 中的扩散调度器（scheduler）
-
-    作用：
-        1. 定义每个时间步 t 的噪声强度 beta_t
-        2. 计算 alpha_t = 1 - beta_t
-        3. 计算累计乘积 alpha_bar_t = ∏_{i<=t} alpha_i
-
-    张量形状说明：
-        betas:      [T]
-        alphas:     [T]
-        alpha_bars: [T]
+    约定：
+      - alpha_bars: [T+1]
+      - alpha_bars[0] = 1 (t=0 完全无噪声)
+      - 扩散/训练时间步 t ∈ {1,...,T}
     """
-    def __init__(self, T: int, beta_start=1e-4, beta_end=2e-2, device="cpu"):
+    def __init__(self, T: int, schedule="cosine", beta_start=1e-4, beta_end=2e-2, device="cpu"):
         self.T = T
         self.device = device
 
-        # 线性增长的 beta（噪声强度）
-        betas = torch.linspace(beta_start, beta_end, T, device=device)  # [T]
+        if schedule == "linear":
+            betas = torch.linspace(beta_start, beta_end, T, device=device)  # [T], 对应 t=1..T
+            alphas = 1.0 - betas
+            alpha_bars = torch.cumprod(alphas, dim=0)                       # [T]
+            alpha_bars = torch.cat([torch.ones(1, device=device), alpha_bars], dim=0)  # [T+1]
 
-        # alpha = 1 - beta
-        alphas = 1.0 - betas                                             # [T]
+        elif schedule == "cosine":
+            # cosine schedule: 直接构造 alpha_bar，再推 beta
+            # 常用 s=0.008
+            s = 0.008
+            steps = torch.arange(T + 1, device=device).float()  # 0..T
+            f = torch.cos(((steps / T) + s) / (1 + s) * math.pi / 2) ** 2
+            alpha_bars = f / f[0]  # 归一化，让 alpha_bars[0]=1
 
-        # alpha_bar_t = alpha_1 * alpha_2 * ... * alpha_t
-        alpha_bars = torch.cumprod(alphas, dim=0)                        # [T]
+            # 推出 betas(t)=1 - alpha_bar(t)/alpha_bar(t-1)  for t=1..T
+            betas = 1.0 - (alpha_bars[1:] / alpha_bars[:-1])
+            betas = betas.clamp(1e-8, 0.999)
+            alphas = 1.0 - betas
 
-        self.betas = betas
-        self.alphas = alphas
-        self.alpha_bars = alpha_bars
+        else:
+            raise ValueError("schedule must be 'linear' or 'cosine'")
+
+        self.betas = betas              # [T]  (t=1..T)
+        self.alphas = alphas            # [T]
+        self.alpha_bars = alpha_bars    # [T+1]
 
     def sample_timesteps(self, bs: int):
-        """
-        从 {0, 1, ..., T-1} 中均匀采样时间步 t
+        # 训练用 t ∈ [1, T]
+        return torch.randint(1, self.T + 1, (bs,), device=self.device, dtype=torch.long)
 
-        输入：
-            bs: batch size
-        输出：
-            t: [bs]，每个样本一个时间步（long 类型）
+    def q_sample(self, f0: torch.Tensor, t: torch.Tensor, eps: torch.Tensor = None):
         """
-        return torch.randint(
-            low=0,
-            high=self.T,
-            size=(bs,),
-            device=self.device,
-            dtype=torch.long
+        f_t = sqrt(alpha_bar[t]) * f0 + sqrt(1-alpha_bar[t]) * eps
+        t: [bs] in {1..T}
+        """
+        if eps is None:
+            eps = torch.randn_like(f0)
+
+        # alpha_bar[t] 取出来并 reshape 以便广播
+        a_bar = self.alpha_bars.to(f0.device)[t].view(-1, 1, 1)  # [bs,1,1]
+
+        return torch.sqrt(a_bar) * f0 + torch.sqrt(1.0 - a_bar) * eps
+
+
+# =========================
+# 2) DDIM 采样：修正 t 范围，和 schedule 对齐
+# =========================
+@torch.no_grad()
+def diffusion_sample_ddim(model, schedule: DiffusionSchedule, hat_f: torch.Tensor):
+    """
+    确定性 DDIM (eta=0)：
+      - 从 x_T ~ N(0,1) 开始
+      - t: T -> 1
+      - 输出 x0
+    """
+    model.eval()
+    device = hat_f.device
+    bs, L, D = hat_f.shape
+
+    T = schedule.T
+    alpha_bars = schedule.alpha_bars.to(device)  # [T+1]
+
+    # x_T from pure noise
+    x = torch.randn_like(hat_f)
+
+    for t in range(T, 0, -1):
+        t_batch = torch.full((bs,), t, device=device, dtype=torch.long)
+
+        a_t = alpha_bars[t].view(1, 1, 1)        # scalar -> broadcast
+        a_prev = alpha_bars[t-1].view(1, 1, 1)
+
+        eps_pred = model(f_t=x, t=t_batch, hat_f=hat_f)  # [bs,L,D]
+
+        # predict x0
+        x0_pred = (x - torch.sqrt(1.0 - a_t) * eps_pred) / torch.sqrt(a_t)
+
+        # deterministic DDIM update
+        x = torch.sqrt(a_prev) * x0_pred + torch.sqrt(1.0 - a_prev) * eps_pred
+
+    return x  # x0
+
+
+class ConditionalDenoiser(nn.Module):
+    """
+    更稳的条件融合版本：
+      x = proj_noisy(f_t) + proj_cond(hat_f) + time_emb
+    """
+    def __init__(
+        self,
+        feature_dim=128,
+        model_dim=256,
+        num_layers=4,
+        num_heads=8,
+        time_dim=256,
+        dropout=0.1
+    ):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.model_dim = model_dim
+
+        # time embedding
+        self.time_embed = SinusoidalTimeEmbedding(time_dim)
+        self.time_mlp = nn.Sequential(
+            nn.Linear(time_dim, model_dim),
+            nn.SiLU(),
+            nn.Linear(model_dim, model_dim),
         )
 
-    def q_sample(self, f0: torch.Tensor, t: torch.Tensor, eps: torch.Tensor):
-        """
-        前向扩散过程（加噪）：
+        # separate projections
+        self.noisy_proj = nn.Linear(feature_dim, model_dim)
+        self.cond_proj  = nn.Linear(feature_dim, model_dim)
 
-            f_t = sqrt(alpha_bar_t) * f0
-                + sqrt(1 - alpha_bar_t) * eps
+        # stabilize
+        self.in_norm = nn.LayerNorm(model_dim)
 
-        输入：
-            f0:  [bs, L, D]   干净的语义特征（你的目标 f）
-            t:   [bs]         每个样本对应的时间步
-            eps: [bs, L, D]   标准高斯噪声 N(0, I)
-
-        输出：
-            f_t: [bs, L, D]   加噪后的特征
-        """
-        # 取出 batch 中每个样本对应的 alpha_bar_t
-        # 形状从 [bs] -> [bs, 1, 1]，方便和 [L, D] 广播
-        alpha_bar_t = self.alpha_bars[t].view(-1, 1, 1)
-
-        return (
-            torch.sqrt(alpha_bar_t) * f0
-            + torch.sqrt(1.0 - alpha_bar_t) * eps
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=model_dim,
+            nhead=num_heads,
+            dim_feedforward=model_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True
         )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
+        self.out_norm = nn.LayerNorm(model_dim)
+        self.out_proj = nn.Linear(model_dim, feature_dim)
+
+    def forward(self, f_t: torch.Tensor, t: torch.Tensor, hat_f: torch.Tensor):
+        bs, L, D = f_t.shape
+        assert hat_f.shape == (bs, L, D), "hat_f 的形状必须和 f_t 一致"
+
+        # project
+        x = self.noisy_proj(f_t) + self.cond_proj(hat_f)   # [bs, L, model_dim]
+
+        # time emb
+        t_emb = self.time_mlp(self.time_embed(t))          # [bs, model_dim]
+        x = x + t_emb.unsqueeze(1)
+
+        # norm + transformer
+        x = self.in_norm(x)
+        x = self.encoder(x)
+        x = self.out_norm(x)
+
+        eps_pred = self.out_proj(x)
+        return eps_pred
 
 # =========================================================
-# 2) 时间步 t 的正弦时间嵌入（Sinusoidal Embedding）
+# 2) 时间步 t 的正弦时间嵌入（Sinusoidal Em    bedding）
 # =========================================================
 class SinusoidalTimeEmbedding(nn.Module):
     """
@@ -1751,236 +1833,26 @@ class SinusoidalTimeEmbedding(nn.Module):
 
         return emb
 
-
-# =========================================================
-# 3) 条件去噪网络：预测噪声 eps
-# =========================================================
-class ConditionalDenoiser(nn.Module):
-    """
-    条件扩散模型的核心网络（去噪器）
-
-    输入：
-        f_t:   [bs, L, D]   被加噪后的特征
-        hat_f: [bs, L, D]   条件特征（经过信道的特征）
-        t:     [bs]         时间步
-
-    输出：
-        eps_pred: [bs, L, D]  预测的噪声
-    """
-    def __init__(
-        self,
-        feature_dim=128,   # D
-        model_dim=256,     # Transformer 内部维度
-        num_layers=4,
-        num_heads=8,
-        time_dim=256,
-        dropout=0.1
-    ):
-        super().__init__()
-        self.feature_dim = feature_dim
-        self.model_dim = model_dim
-
-        # 时间嵌入：t -> [bs, time_dim] -> [bs, model_dim]
-        self.time_embed = SinusoidalTimeEmbedding(time_dim)
-        self.time_mlp = nn.Sequential(
-            nn.Linear(time_dim, model_dim),
-            nn.SiLU(),
-            nn.Linear(model_dim, model_dim),
-        )
-
-        # 输入投影：
-        # concat([f_t, hat_f]) -> [bs, L, 2D] -> [bs, L, model_dim]
-        self.in_proj = nn.Linear(2 * feature_dim, model_dim)
-
-        # Transformer Encoder（沿着序列长度 L 建模）
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=model_dim,
-            nhead=num_heads,
-            dim_feedforward=model_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,   # 输入输出都是 [bs, L, dim]
-            norm_first=True
-        )
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_layers
-        )
-
-        # 输出投影：预测噪声
-        self.out_proj = nn.Linear(model_dim, feature_dim)
-
-    def forward(self, f_t: torch.Tensor, t: torch.Tensor, hat_f: torch.Tensor):
-        """
-        预测噪声
-
-        输入：
-            f_t:   [bs, L, D]
-            t:     [bs]
-            hat_f: [bs, L, D]
-
-        输出：
-            eps_pred: [bs, L, D]
-        """
-        bs, L, D = f_t.shape
-        assert hat_f.shape == (bs, L, D), "hat_f 的形状必须和 f_t 一致"
-
-        # 1) 拼接 noisy feature 和条件 feature
-        x = torch.cat([f_t, hat_f], dim=-1)   # [bs, L, 2D]
-
-        # 2) 投影到 Transformer 维度
-        x = self.in_proj(x)                   # [bs, L, model_dim]
-
-        # 3) 加上时间嵌入（对每个 token 广播）
-        t_emb = self.time_embed(t)            # [bs, time_dim]
-        t_emb = self.time_mlp(t_emb)          # [bs, model_dim]
-        x = x + t_emb.unsqueeze(1)            # [bs, L, model_dim]
-
-        # 4) Transformer 编码
-        x = self.encoder(x)                   # [bs, L, model_dim]
-
-        # 5) 输出预测噪声
-        eps_pred = self.out_proj(x)           # [bs, L, D]
-        return eps_pred
-
-
-
-# =========================================================
-# 5) 采样函数（从噪声恢复特征）
-# =========================================================
 @torch.no_grad()
-def diffusion_sample(model, schedule, hat_f, steps=None):
+def ddim_from_xt(model, schedule, x_T, hat_f, t_start: int):
     """
-    在给定条件 hat_f 的情况下，生成恢复后的特征 f_hat
-
-    输入：
-        hat_f: [bs, L, D]
-        steps: 反向扩散步数（默认用全部 T）
-
-    输出：
-        f_hat: [bs, L, D]
+    DDIM 确定性反推：从给定的 x_{t_start} 开始 -> x_0
+    schedule: alpha_bars [T+1], t in [1..T]
     """
-    model.eval()
-    bs, L, D = hat_f.shape
-    T = schedule.T if steps is None else steps
-
-    # 从纯噪声开始
-    f = torch.randn_like(hat_f)  # f_T
-
-    # 从 T-1 反向迭代到 0
-    for ti in reversed(range(T)):
-        t = torch.full((bs,), ti, device=hat_f.device, dtype=torch.long)
-
-        beta_t = schedule.betas[ti]
-        alpha_t = schedule.alphas[ti]
-        alpha_bar_t = schedule.alpha_bars[ti]
-
-        # 预测噪声
-        eps_pred = model(f, t, hat_f)
-
-        # DDPM 计算均值
-        # mu = 1/sqrt(alpha_t) * ( f_t - beta_t/sqrt(1-alpha_bar_t) * eps_pred )
-        mu = (1.0 / torch.sqrt(alpha_t)) * (f - (beta_t / torch.sqrt(1.0 - alpha_bar_t)) * eps_pred)
-
-        if ti > 0:
-            # add noise z ~ N(0,I) for stochastic sampling 保持多样性
-            z = torch.randn_like(f)
-            # sigma_t = sqrt(beta_t)  # DDPM原始公式 控制噪声的大小
-            # f = mu + torch.sqrt(beta_t) * z
-            f = mu
-        else:
-            f = mu  # 最后一步不加噪声 保持稳定 确定性
-
-# 用下面这个完整的简化版DDIM采样替代上面的DDPM采样
-@torch.no_grad()
-def diffusion_sample_ddim_simple(model, schedule, hat_f):
-    """
-    简化版 DDIM 采样：
-    - 使用完整 T 步
-    - 确定性 (eta = 0)
-    - 接口和你原来的 diffusion_sample 完全一致
-    """
-    model.eval()
-    device = hat_f.device
-    bs, L, D = hat_f.shape
-
-    T = schedule.T
+    device = x_T.device
+    bs = x_T.size(0)
     alpha_bars = schedule.alpha_bars.to(device)
 
-    # 从纯噪声开始
-    x = torch.randn_like(hat_f)  # x_T
-
-    # 从 T-1 -> 0
-    for t in reversed(range(T)):
+    x = x_T
+    for t in range(t_start, 0, -1):
         t_batch = torch.full((bs,), t, device=device, dtype=torch.long)
 
-        a_t = alpha_bars[t]
-        a_prev = alpha_bars[t - 1] if t > 0 else torch.tensor(1.0, device=device)
+        a_t = alpha_bars[t].view(1, 1, 1)
+        a_prev = alpha_bars[t-1].view(1, 1, 1)
 
-        # 预测噪声
         eps_pred = model(f_t=x, t=t_batch, hat_f=hat_f)
-
-        # 反推 x0
-        x0_pred = (x - torch.sqrt(1.0 - a_t) * eps_pred) / torch.sqrt(a_t)
-
-        # DDIM 确定性更新
-        if t > 0:
-            x = torch.sqrt(a_prev) * x0_pred + torch.sqrt(1.0 - a_prev) * eps_pred
-        else:
-            x = x0_pred  # 最后一步
-
-    return x
-
-# 下面是从任意xt开始的k步DDIM采样函数（用于训练时的部分采样）
-def ddim_k_steps_from_xt_train(model, schedule, x_t, hat_f, t, k=10):  # 这是新家的
-    device = x_t.device
-    alpha_bars = schedule.alpha_bars.to(device)
-
-    x = x_t
-    tt = t
-
-    for _ in range(k):
-        tt_prev = torch.clamp(tt - 1, min=0)
-
-        a_t = alpha_bars[tt].view(-1, 1, 1)
-        a_prev = alpha_bars[tt_prev].view(-1, 1, 1)
-
-        eps_pred = model(f_t=x, t=tt, hat_f=hat_f)
         x0_pred = (x - torch.sqrt(1.0 - a_t) * eps_pred) / torch.sqrt(a_t)
 
         x = torch.sqrt(a_prev) * x0_pred + torch.sqrt(1.0 - a_prev) * eps_pred
-        tt = tt_prev
-
-        if (tt == 0).all():
-            break
 
     return x
-
-
-# debug用的一个函数
-@torch.no_grad()
-def feature_stats(f0_pred, f_p, prefix="train"):
-    """
-    f0_pred: [bs,L,D]  扩散模型估计的“干净特征”
-    f_p:     [bs,L,D]  你的 baseline 特征（hat_f）
-    """
-    # 1) L2 偏离（每个样本一个数，再求均值）
-    diff_l2 = (f0_pred - f_p).pow(2).mean(dim=(1,2)).sqrt().mean().item()
-
-    # 2) 预测特征的整体标准差（防止塌缩）
-    pred_std = f0_pred.std().item()
-
-    # 3) 幅度
-    pred_abs_mean = f0_pred.abs().mean().item()
-
-    # 4) cosine 相似度（把 [L,D] 展平再算）
-    a = f0_pred.reshape(f0_pred.size(0), -1)
-    b = f_p.reshape(f_p.size(0), -1)
-    cos = F.cosine_similarity(a, b, dim=1).mean().item()
-
-    return {
-        f"{prefix}/diff_l2": diff_l2,
-        f"{prefix}/pred_std": pred_std,
-        f"{prefix}/pred_abs_mean": pred_abs_mean,
-        f"{prefix}/cos": cos,
-    }
