@@ -10,7 +10,7 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 from models.tranceiver_for_34 import Key_net, Attacker, MAC, CAEM_Fig2_SNR_1D, FeatureMapSelectionModule_SNR_AllC, \
-    VerificationDiscriminatorLN, DiffusionSchedule, ConditionalDenoiser
+    VerificationDiscriminatorLN, DiffusionSchedule, ConditionalDenoiser, SemComDiffusion, FeatureScaler
 from utlis.tools import SNR_to_noise, SeqtoText, BleuScore
 from utlis.trainer_for_34 import initNetParams, train_step, val_step, train_mi, greedy_decode
 from dataset.dataloader import return_iter, return_iter_10, return_iter_eve
@@ -55,7 +55,7 @@ def setup_seed(seed):  # 设置随机种子，根本没用
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
-def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, mi_net=None):  # 当前训练的轮数，命令行参数，模型，互信息网络（默认是None，也就是不训互信息网络）
+def train(scaler_f0, scaler_cond, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, mi_net=None):  # 当前训练的轮数，命令行参数，模型，互信息网络（默认是None，也就是不训互信息网络）
     train_iterator = return_iter(args, 'train')  # 从训练数据集中抓牌，得到的是一个dataloader类型的对象（其实就是dataloder 用法完全一样）
     print("len", len(train_iterator))
     train_iterator_eve = return_iter_eve(args, 'train')
@@ -100,7 +100,7 @@ def train(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice
                 )
             )
         else:
-            loss_eps, loss_keep, loss_keep_k, status = train_step(schedule, cdmodel,
+            loss_eps, loss_keep, loss_keep_k, status = train_step(scaler_f0, scaler_cond, cdmodel,
                                     args, epoch, batch, net,
                                     alice_bob_mac, key_ab, eve,
                                     Alice_KB, Bob_KB, Eve_KB,
@@ -332,14 +332,20 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
     Eve_mapping = KB_Mapping().to(device)
 
-    T = 200
-    schedule = DiffusionSchedule(T=T, device=device)
-    cdmodel = ConditionalDenoiser(
-        feature_dim=128,
-        model_dim=256,
-        num_layers=4,
-        num_heads=8,
-    ).to(device)
+    # T = 200
+    # schedule = DiffusionSchedule(T=T, device=device)
+    # cdmodel = ConditionalDenoiser(
+    #     feature_dim=128,
+    #     model_dim=256,
+    #     num_layers=4,
+    #     num_heads=8,
+    # ).to(device)
+
+    # --- 归一化 ---
+    scaler_f0 = FeatureScaler()
+    scaler_cond = FeatureScaler()
+    seq_len, feat_dim = 31, 128
+    cdmodel = SemComDiffusion(feat_dim=feat_dim, seq_len=seq_len).to(device)
 
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 之前三个检测率都最好
@@ -398,11 +404,11 @@ if __name__ == '__main__':
         start = time.time()  # 记录每轮开始时间（没用到）
         record_loss = 1000  # 其实是loss，设置的大一点
 
-        loss_eps, loss_keep, loss_keep_k, status = train(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
+        loss_eps, loss_keep, loss_keep_k, status = train(scaler_f0, scaler_cond, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
 
-        loss_eps_test, loss_keep_test, status_test = validate(schedule, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+        loss_eps_test, loss_keep_test, status_test = validate(scaler_f0, scaler_cond, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
 
-        bleu_score = performance(schedule, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+        bleu_score = performance(scaler_f0, scaler_cond, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
         print("bleu_score: ", bleu_score)
 
         if loss_eps_test < record_loss:  # 如果验证的loss小于之前的loss（性能更好了）

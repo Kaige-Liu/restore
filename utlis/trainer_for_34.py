@@ -181,7 +181,7 @@ criterion_noise = nn.MSELoss().to(device)
 # loss_eve_test = torch.tensor(0.)
 
 
-def train_step(schedule, cdmodel, args, epoch, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, opt_joint, channel, mi_net=None):  # 模型，发送的128个句子，发送的128个句子，噪声标准差(类型数字)，数字0，deepsc优化器，信道类型
+def train_step(scaler_f0, scaler_cond, cdmodel, args, epoch, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, opt_joint, channel, mi_net=None):  # 模型，发送的128个句子，发送的128个句子，噪声标准差(类型数字)，数字0，deepsc优化器，信道类型
     torch.autograd.set_detect_anomaly(True)  # 检测梯度异常
 
     trg_inp = trg[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
@@ -196,6 +196,7 @@ def train_step(schedule, cdmodel, args, epoch, batch, model, alice_bob_mac, key_
     bs = args.batch_size
     snr_min, snr_max = 20.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
+    noise_std_condition = np.random.uniform(SNR_to_noise(10.0), SNR_to_noise(10.0), size=(1))[0]  # 模拟条件是过10db的噪声
     snr_lin = 1.0 / (noise_std ** 2)
     snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
     snr = snr_db.expand(bs).float()  # 输入到snr网络中的snr 单位是db
@@ -260,6 +261,17 @@ def train_step(schedule, cdmodel, args, epoch, batch, model, alice_bob_mac, key_
     f_p = memory[:, :31, :]  # 前31个通道
     f_p_condition = memory_condition[:, :31, :]
     mac_p = memory[:, 31:, :]  # 后31个通道
+
+
+
+
+
+
+
+
+
+
+
 
     t = schedule.sample_timesteps(bs)     # [bs]
     eps = torch.randn_like(f_p)            # [bs, L, D]

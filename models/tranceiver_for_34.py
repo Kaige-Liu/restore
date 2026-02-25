@@ -1856,3 +1856,63 @@ def ddim_from_xt(model, schedule, x_T, hat_f, t_start: int):
         x = torch.sqrt(a_prev) * x0_pred + torch.sqrt(1.0 - a_prev) * eps_pred
 
     return x
+
+
+
+# 重写了扩散模型 用了UNet 并用了现有的库
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from diffusers import UNet1DModel, DDIMScheduler
+from tqdm import tqdm
+import os
+
+
+# ==========================================
+# 1. 归一化方案 A：标准正态分布归一化
+# ==========================================
+class FeatureScaler:
+    def __init__(self):
+        self.mean = None
+        self.std = None
+
+    def fit_transform(self, x):
+        self.mean = x.mean()
+        self.std = x.std()
+        return (x - self.mean) / (self.std + 1e-6)
+
+    def inverse_transform(self, x_norm):
+        return x_norm * self.std + self.mean
+
+
+# ==========================================
+# 2. 条件扩散模型类定义
+# ==========================================
+class SemComDiffusion(nn.Module):
+    def __init__(self, feat_dim=128, seq_len=31):
+        super().__init__()
+        self.feat_dim = feat_dim
+        self.seq_len = seq_len
+
+        # 定义 UNet1D
+        # 输入维度: feat_dim * 2 (f_t 和 f_cond 在通道维度拼接)
+        self.model = UNet1DModel(
+            in_channels=feat_dim * 2,
+            out_channels=feat_dim,
+            block_out_channels=(128, 256, 512),
+            layers_per_block=2,
+            use_timestep_embedding=True
+        )
+
+        # 训练使用 DDPM 调度，推理使用 DDIM
+        self.scheduler = DDIMScheduler(num_train_timesteps=1000)
+
+    def forward(self, f_t, t, f_cond):
+        """
+        f_t: [bs, 128, 31]
+        f_cond: [bs, 128, 31]
+        """
+        # 在通道维度拼接特征和条件
+        net_input = torch.cat([f_t, f_cond], dim=1)
+        return self.model(net_input, t).sample
