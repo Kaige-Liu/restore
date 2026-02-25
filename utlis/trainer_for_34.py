@@ -181,36 +181,26 @@ criterion_noise = nn.MSELoss().to(device)
 # loss_eve_test = torch.tensor(0.)
 
 
-def train_step(
-    schedule, cdmodel, args, epoch, batch, model,
-    alice_bob_mac, key_ab, eve,
-    Alice_KB, Bob_KB, Eve_KB,
-    Alice_mapping, Bob_mapping, Eve_mapping,
-    src, trg, src_eve, n_var, pad,
-    opt_joint, channel, mi_net=None
-):
-    torch.autograd.set_detect_anomaly(True)
+def train_step(schedule, cdmodel, args, epoch, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, opt_joint, channel, mi_net=None):  # 模型，发送的128个句子，发送的128个句子，噪声标准差(类型数字)，数字0，deepsc优化器，信道类型
+    torch.autograd.set_detect_anomaly(True)  # 检测梯度异常
 
-    device = src.device
+    trg_inp = trg[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
+    trg_real = trg[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
+    trg_inp_eve = src_eve[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
+    trg_real_eve = src_eve[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
+
+    src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
+    src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
+
+    channels = Channels()
     bs = args.batch_size
+    snr_min, snr_max = 20.0, 20.0  # 学习的信噪比区间 不用转换成线性的 线性的反而不好学 因为跨度太大
+    noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]  # 不好的环境
+    snr_lin = 1.0 / (noise_std ** 2)
+    snr_db = 10 * torch.log10(torch.tensor(snr_lin, device=device))
+    snr = snr_db.expand(bs).float()  # 输入到snr网络中的snr 单位是db
 
-    # ===============================
-    # 0. 冻结所有非 cdmodel 的网络参数
-    # ===============================
-    def freeze_params(net):
-        for p in net.parameters():
-            p.requires_grad_(False)
-
-    # freeze_params(model)
-    # freeze_params(alice_bob_mac)
-    # freeze_params(key_ab)
-    # freeze_params(eve)
-    # freeze_params(Alice_KB)
-    # freeze_params(Bob_KB)
-    # freeze_params(Eve_KB)
-    # freeze_params(Alice_mapping)
-    # freeze_params(Bob_mapping)
-    # freeze_params(Eve_mapping)
+    key = generate_key(args, src.shape)
 
     freeze_net(model, False)
     freeze_net(alice_bob_mac, False)
@@ -224,97 +214,53 @@ def train_step(
     freeze_net(Eve_mapping, False)
     freeze_net(cdmodel, True)
 
-    # # cdmodel 是唯一训练的
-    # for p in cdmodel.parameters():
-    #     p.requires_grad_(True)
-
-    # cdmodel.train()   # 只设一次，别来回切
-    # 其它网络保持它们原本的 train/eval 状态即可（不重要）
-
-    # ===============================
-    # 1. 准备 mask
-    # ===============================
-    trg_inp = trg[:, :-1]
-    trg_real = trg[:, 1:]
-    trg_inp_eve = src_eve[:, :-1]
-    trg_real_eve = src_eve[:, 1:]
-
-    src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
-    src_mask_eve, look_ahead_mask_eve = create_masks(src_eve, trg_inp_eve, pad)
-
-    # ===============================
-    # 2. 信道参数（目标 20dB，条件 10dB）
-    # ===============================
-    channels = Channels()
-
-    noise_std = np.random.uniform(
-        SNR_to_noise(20.0), SNR_to_noise(20.0), size=(1)
-    )[0]
-    noise_std_condition = np.random.uniform(
-        SNR_to_noise(10.0), SNR_to_noise(10.0), size=(1)
-    )[0]
-
-    # ===============================
-    # 3. Key / KB（不训练）
-    # ===============================
-    key = generate_key(args, src.shape)
-    key_ebd = key_ab(key)
-
-    Alice_ID = torch.randn(1, args.d_model, device=device)
-    Bob_ID   = torch.randn(1, args.d_model, device=device)
-    Eve_ID   = torch.randn(1, args.d_model, device=device)
-
-    Alice_tmp = Alice_KB(Alice_ID)
-    Bob_tmp   = Bob_KB(Bob_ID)
-    Eve_tmp   = Eve_KB(Eve_ID)
-
-    Alice_mapping_tmp = Alice_mapping(Alice_tmp)
-    Bob_mapping_tmp   = Bob_mapping(Bob_tmp)
-    Eve_mapping_tmp   = Eve_mapping(Eve_tmp)
-
-    Alice_kb_final = Alice_tmp.repeat(bs, 1, 1)
-    Bob_kb_final   = Bob_tmp.repeat(bs, 1, 1)
-    Eve_kb_final   = Eve_tmp.repeat(bs, 1, 1)
-
+    # 知识库 生成随机的[bs, 1， 128]的张量
+    # 这里错了 其实应该生成[1, 128]的张量，然后通过网络生成一个[8, 128]形状的张量，然后复制成[bs, 8, 128]的张量即可（保证每个batch的句子都使用同一个知识库）
+    # 已改
+    Alice_ID = torch.randn(1, args.d_model).to(device)
+    Bob_ID = torch.randn(1, args.d_model).to(device)
+    Eve_ID = torch.randn(1, args.d_model).to(device)
+    Alice_tmp = Alice_KB(Alice_ID)  # 这就是知识库 不断的更新 只有最开始的一轮才是真正的ID，形状是[8, 128]
+    Bob_tmp = Bob_KB(Bob_ID)
+    Eve_tmp = Eve_KB(Eve_ID)
+    Alice_mapping_tmp = Alice_mapping(Alice_tmp)  # 形状是[8, 128]
+    Bob_mapping_tmp = Bob_mapping(Bob_tmp)
+    Eve_mapping_tmp = Eve_mapping(Eve_tmp)
+    Alice_kb_final = Alice_tmp.repeat(bs, 1, 1)  # 进行复制
+    Bob_kb_final = Bob_tmp.repeat(bs, 1, 1)
+    Eve_kb_final = Eve_tmp.repeat(bs, 1, 1)
     Alice_mapping_final = Alice_mapping_tmp.repeat(bs, 1, 1)
-    Bob_mapping_final   = Bob_mapping_tmp.repeat(bs, 1, 1)
-    Eve_mapping_final   = Eve_mapping_tmp.repeat(bs, 1, 1)
+    Bob_mapping_final = Bob_mapping_tmp.repeat(bs, 1, 1)
+    Eve_mapping_final = Eve_mapping_tmp.repeat(bs, 1, 1)
 
-    # ===============================
-    # 4. Encoder → Channel → Decoder
-    # ===============================
-    enc_output = model.encoder(
-        src, src_mask, Alice_kb_final, Bob_mapping_final
-    )
-    enc_output = enc_output[:, :31, :]  # f
+    key_ebd = key_ab(key)  # 生成密钥
 
-    mac = alice_bob_mac.mac_encoder(
-        key_ebd, enc_output, Alice_kb_final, Bob_mapping_final
-    )
+    enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)  # f
+    enc_output = enc_output[:, :31, :]  # 只前31个通道 f
+    mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
 
     semantic_mac = torch.cat([enc_output, mac], dim=1)
 
     channel_enc_output = model.channel_encoder(semantic_mac)
     Tx_sig = PowerNormalize(channel_enc_output)
 
-    if channel == "AWGN":
-        Rx_sig = channels.AWGN(Tx_sig, noise_std)
-        Rx_sig_condition = channels.AWGN(Tx_sig, noise_std_condition)
-    elif channel == "Rayleigh":
+    if channel == 'AWGN':
+        Rx_sig = channels.AWGN(Tx_sig, noise_std)  # 这个noise_std也是一个数
+    elif channel == 'Rayleigh':
         Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
         Rx_sig_condition = channels.Rayleigh(Tx_sig, noise_std_condition)
+    elif channel == 'Rician':
+        Rx_sig = channels.Rician(Tx_sig, noise_std)
     else:
-        raise ValueError("Unsupported channel")
+        raise ValueError("Please choose from AWGN, Rayleigh, and Rician")
 
     memory = model.channel_decoder(Rx_sig)
     memory_condition = model.channel_decoder(Rx_sig_condition)
 
-    f_p = memory[:, :31, :]              # target (20dB)
-    f_p_condition = memory_condition[:, :31, :]  # condition (10dB)
+    f_p = memory[:, :31, :]  # 前31个通道
+    f_p_condition = memory_condition[:, :31, :]
+    mac_p = memory[:, 31:, :]  # 后31个通道
 
-    # ===============================
-    # 5. 扩散训练（唯一有梯度的部分）
-    # ===============================
     t = schedule.sample_timesteps(bs)     # [bs]
     eps = torch.randn_like(f_p)            # [bs, L, D]
     f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)
@@ -333,14 +279,11 @@ def train_step(
     # loss = loss_eps + loss_keep_1step + loss_keep_k
     loss = loss_eps + loss_keep_1step
 
-    # ===============================
-    # 6. 反向传播
-    # ===============================
     opt_joint.zero_grad(set_to_none=True)
     loss.backward()
     opt_joint.step()
 
-    stats = feature_stats(f0_pred.detach(), f_p.detach(), prefix="train")
+    stats = feature_stats(f0_pred, f_p, prefix="train")
 
     return loss_eps.item(), loss_keep_1step.item(), loss_keep_1step.item(), stats
 
