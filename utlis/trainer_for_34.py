@@ -11,6 +11,7 @@ import torch.nn.functional as F
 
 from models.tranceiver_for_34 import ddim_from_xt
 from models.transceiver import feature_stats, diffusion_sample, diffusion_sample_ddim_simple, ddim_k_steps_from_xt_train
+from test_for_34 import recover_feature
 from utlis.tools import SeqtoText, BleuScore
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -262,46 +263,49 @@ def train_step(scaler_f0, scaler_cond, cdmodel, args, epoch, batch, model, alice
     f_p_condition = memory_condition[:, :31, :]
     mac_p = memory[:, 31:, :]  # 后31个通道
 
+    f0_norm = scaler_f0.fit_transform(f_p)
+    f_cond_norm = scaler_cond.fit_transform(f_p_condition)
+
+    f0_norm = f0_norm.transpose(1, 2).to(device)
+    f_cond_norm = f_cond_norm.transpose(1, 2).to(device)
+
+    noise = torch.randn_like(f0_norm)
+    timesteps = torch.randint(0, 1000, (f0_norm.shape[0],), device=device).long()
+    noisy_f = cdmodel.scheduler.add_noise(f0_norm, noise, timesteps)
+
+    noise_pred = cdmodel(noisy_f, timesteps, f_cond_norm)
+    loss_eps = nn.MSELoss()(noise_pred, noise)
+
+
+    # t = schedule.sample_timesteps(bs)     # [bs]
+    # eps = torch.randn_like(f_p)            # [bs, L, D]
+    # f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)
+    #
+    # eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p_condition)
+    #
+    # alpha_bar = schedule.alpha_bars.to(f_p.device)[t].view(-1, 1, 1)
+    # f0_pred = (f_t - torch.sqrt(1.0 - alpha_bar) * eps_pred) / torch.sqrt(alpha_bar)
+    #
+    # loss_eps = F.mse_loss(eps_pred, eps)
+    # loss_keep_1step = F.mse_loss(f0_pred, f_p)
+    #
+    # # x_k = ddim_k_steps_from_xt_train(cdmodel, schedule, f_t, f_p_condition, t, k=10)
+    # # loss_keep_k = F.mse_loss(x_k, f_p)
+    #
+    # # loss = loss_eps + loss_keep_1step + loss_keep_k
+    # loss = loss_eps + loss_keep_1step
+    #
+    # opt_joint.zero_grad(set_to_none=True)
+    # loss.backward()
+    # opt_joint.step()
+    #
+    # stats = feature_stats(f0_pred, f_p, prefix="train")
+
+    return loss_eps.item()
 
 
 
-
-
-
-
-
-
-
-
-    t = schedule.sample_timesteps(bs)     # [bs]
-    eps = torch.randn_like(f_p)            # [bs, L, D]
-    f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)
-
-    eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p_condition)
-
-    alpha_bar = schedule.alpha_bars.to(f_p.device)[t].view(-1, 1, 1)
-    f0_pred = (f_t - torch.sqrt(1.0 - alpha_bar) * eps_pred) / torch.sqrt(alpha_bar)
-
-    loss_eps = F.mse_loss(eps_pred, eps)
-    loss_keep_1step = F.mse_loss(f0_pred, f_p)
-
-    # x_k = ddim_k_steps_from_xt_train(cdmodel, schedule, f_t, f_p_condition, t, k=10)
-    # loss_keep_k = F.mse_loss(x_k, f_p)
-
-    # loss = loss_eps + loss_keep_1step + loss_keep_k
-    loss = loss_eps + loss_keep_1step
-
-    opt_joint.zero_grad(set_to_none=True)
-    loss.backward()
-    opt_joint.step()
-
-    stats = feature_stats(f0_pred, f_p, prefix="train")
-
-    return loss_eps.item(), loss_keep_1step.item(), loss_keep_1step.item(), stats
-
-
-
-def val_step(schedule, cdmodel, args, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, channel):  # 参数模型，发送的128个句子，发送的128个句子，噪声标准差(数字0.1)，数字0，信道类型
+def val_step(scaler_f0, scaler_cond, cdmodel, args, batch, model, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, trg, src_eve, n_var, pad, channel):  # 参数模型，发送的128个句子，发送的128个句子，噪声标准差(数字0.1)，数字0，信道类型
     trg_inp = trg[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
     trg_real = trg[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
     trg_inp_eve = src_eve[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
@@ -384,24 +388,40 @@ def val_step(schedule, cdmodel, args, batch, model, alice_bob_mac, key_ab, eve, 
     f_p_condition = memory_condition[:, :31, :]
     mac_p = memory[:, 31:, :]  # 后31个通道
 
+    f0_norm = scaler_f0.fit_transform(f_p)
+    f_cond_norm = scaler_cond.fit_transform(f_p_condition)
 
-    # f_huifu = diffusion_sample_ddim_simple(cdmodel, schedule, f_p_condition)
-    t = schedule.sample_timesteps(bs)  # [bs]
-    T = schedule.T
-    t = torch.full((bs,), T, device=device, dtype=torch.long)
-    eps = torch.randn_like(f_p)  # [bs, L, D]
-    f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)  # [bs, L, D]
-    eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p_condition)  # [bs, L, D]
+    f0_norm = f0_norm.transpose(1, 2).to(device)
+    f_cond_norm = f_cond_norm.transpose(1, 2).to(device)
 
-    f_huifu = ddim_from_xt(cdmodel, schedule, x_T=f_t, hat_f=f_p_condition, t_start=T)
+    noise = torch.randn_like(f0_norm)
+    timesteps = torch.randint(0, 1000, (f0_norm.shape[0],), device=device).long()
+    noisy_f = cdmodel.scheduler.add_noise(f0_norm, noise, timesteps)
 
-    loss_keep = F.mse_loss(f_huifu, f_p)
+    noise_pred = cdmodel(noisy_f, timesteps, f_cond_norm)
+    loss_eps = nn.MSELoss()(noise_pred, noise)
 
-    stats = feature_stats(f_huifu, f_p, prefix="test")
+    f0_norm_recovered = recover_feature(cdmodel, f_cond_norm, num_steps=50)
+    f0_final = scaler_f0.inverse_transform(f0_norm_recovered)
 
-    loss_eps = F.mse_loss(eps_pred, eps)
+    loss_keep = nn.MSELoss()(f0_final, f_p)
+    # # f_huifu = diffusion_sample_ddim_simple(cdmodel, schedule, f_p_condition)
+    # t = schedule.sample_timesteps(bs)  # [bs]
+    # T = schedule.T
+    # t = torch.full((bs,), T, device=device, dtype=torch.long)
+    # eps = torch.randn_like(f_p)  # [bs, L, D]
+    # f_t = schedule.q_sample(f0=f_p, t=t, eps=eps)  # [bs, L, D]
+    # eps_pred = cdmodel(f_t=f_t, t=t, hat_f=f_p_condition)  # [bs, L, D]
+    #
+    # f_huifu = ddim_from_xt(cdmodel, schedule, x_T=f_t, hat_f=f_p_condition, t_start=T)
+    #
+    # loss_keep = F.mse_loss(f_huifu, f_p)
+    #
+    # stats = feature_stats(f_huifu, f_p, prefix="test")
+    #
+    # loss_eps = F.mse_loss(eps_pred, eps)
 
-    return loss_eps.item(), loss_keep.item(), stats
+    return loss_eps.item(), loss_keep.item()
 
 
 def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
@@ -425,7 +445,7 @@ def mac_accuracy_all(normal, eve1, eve2): # 返回的是检测成功率
 
     return (ct_normal + ct_eve1 + ct_eve2) / (normal.size(0) + eve1.size(0) + eve2.size(0))  # 返回总的准确率
 
-def greedy_decode(schedule, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, pad, start_symbol, channel):
+def greedy_decode(scaler_f0, scaler_cond, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping, src, src_eve, noise_std, max_len, pad, start_symbol, channel):
     trg_inp = src[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
     trg_real = src[:, 1:]  # 把每个句子的第一个单词(开始的START1)去掉
     trg_inp_eve = src_eve[:, :-1]  # 把每个句子的最后一个单词(填充的PAD0或END2)去掉
@@ -517,7 +537,23 @@ def greedy_decode(schedule, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, A
     f_p_condition = memory_condition[:, :31, :]
     mac_p = memory[:, 31:, :]  # 后31个通道
 
-    f = diffusion_sample_ddim_simple(cdmodel, schedule, f_p_condition)  # 这个f就是恢复的encoder_output了
+    f0_norm = scaler_f0.fit_transform(f_p)
+    f_cond_norm = scaler_cond.fit_transform(f_p_condition)
+
+    f0_norm = f0_norm.transpose(1, 2).to(device)
+    f_cond_norm = f_cond_norm.transpose(1, 2).to(device)
+
+    noise = torch.randn_like(f0_norm)
+    timesteps = torch.randint(0, 1000, (f0_norm.shape[0],), device=device).long()
+    noisy_f = cdmodel.scheduler.add_noise(f0_norm, noise, timesteps)
+
+    noise_pred = cdmodel(noisy_f, timesteps, f_cond_norm)
+    loss_eps = nn.MSELoss()(noise_pred, noise)
+
+    f0_norm_recovered = recover_feature(cdmodel, f_cond_norm, num_steps=50)
+    f0_final = scaler_f0.inverse_transform(f0_norm_recovered)
+
+    # f = diffusion_sample_ddim_simple(cdmodel, schedule, f_p_condition)  # 这个f就是恢复的encoder_output了
 
     outputs = torch.ones(src.size(0), 1).fill_(start_symbol).type_as(src.data)
 
@@ -529,7 +565,7 @@ def greedy_decode(schedule, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, A
         combined_mask = torch.max(trg_mask, look_ahead_mask)
         combined_mask = combined_mask.to(device)
 
-        dec_output = deepsc.decoder(outputs, f, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p)
+        dec_output = deepsc.decoder(outputs, f0_final, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p)
         pred = deepsc.dense(dec_output)
 
         # predict the word

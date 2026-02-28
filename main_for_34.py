@@ -10,7 +10,8 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 from models.tranceiver_for_34 import Key_net, Attacker, MAC, CAEM_Fig2_SNR_1D, FeatureMapSelectionModule_SNR_AllC, \
-    VerificationDiscriminatorLN, DiffusionSchedule, ConditionalDenoiser, SemComDiffusion, FeatureScaler
+    VerificationDiscriminatorLN, DiffusionSchedule, ConditionalDenoiser
+from test_for_34 import FeatureScaler, SemComDiffusion
 from utlis.tools import SNR_to_noise, SeqtoText, BleuScore
 from utlis.trainer_for_34 import initNetParams, train_step, val_step, train_mi, greedy_decode
 from dataset.dataloader import return_iter, return_iter_10, return_iter_eve
@@ -100,7 +101,7 @@ def train(scaler_f0, scaler_cond, cdmodel, epoch, args, net, alice_bob_mac, key_
                 )
             )
         else:
-            loss_eps, loss_keep, loss_keep_k, status = train_step(scaler_f0, scaler_cond, cdmodel,
+            loss_eps = train_step(scaler_f0, scaler_cond, cdmodel,
                                     args, epoch, batch, net,
                                     alice_bob_mac, key_ab, eve,
                                     Alice_KB, Bob_KB, Eve_KB,
@@ -112,8 +113,8 @@ def train(scaler_f0, scaler_cond, cdmodel, epoch, args, net, alice_bob_mac, key_
                                     args.channel)
 
             total_eps += loss_eps
-            total_keep += loss_keep
-            total_keep_k += loss_keep_k
+            # total_keep += loss_keep
+            # total_keep_k += loss_keep_k
 
         batch += 1
 
@@ -122,10 +123,10 @@ def train(scaler_f0, scaler_cond, cdmodel, epoch, args, net, alice_bob_mac, key_
     print("loss_eps: ", total_eps / len(train_iterator))
     print("================train======================")
 
-    return total_eps / len(train_iterator), total_keep / len(train_iterator), total_keep_k / len(train_iterator), status
+    return total_eps / len(train_iterator)
 
-def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):  # epoch表示正在验证的是第几轮
-    test_iterator = return_iter(args, 'train')  # 从测试数据集中抓牌
+def validate(scaler_f0, scaler_cond, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):  # epoch表示正在验证的是第几轮
+    test_iterator = return_iter(args, 'test')  # 从测试数据集中抓牌
     test_iterator_eve = return_iter_eve(args, 'test')
 
     net.eval()  # 将模型设置为验证模式
@@ -157,7 +158,7 @@ def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Al
                 pbar_eve_iter = iter(pbar_eve)
                 sents_eve = next(pbar_eve_iter).to(device)
 
-            loss_eps, loss_keep, status = val_step(schedule, cdmodel,
+            loss_eps, loss_keep = val_step(scaler_f0, scaler_cond, cdmodel,
                                             args, batch, net, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
                                                                                           sents, sents, sents_eve, 0.1, pad_idx, args.channel)
 
@@ -179,15 +180,15 @@ def validate(schedule, cdmodel, epoch, args, net, alice_bob_mac, key_ab, eve, Al
     print("loss_eps_test: ", total_eps / len(test_iterator))
     print("================validate======================")
 
-    return total_eps / len(test_iterator), total_keep / len(test_iterator), status
+    return total_eps / len(test_iterator), total_keep / len(test_iterator)
 
 
 
-def performance(schedule, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):
+def performance(scaler_f0, scaler_cond, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping):
     # similarity = Similarity(args.bert_config_path, args.bert_checkpoint_path, args.bert_dict_path)
     bleu_score_1gram = BleuScore(1, 0, 0, 0)
 
-    test_iterator = return_iter(args, 'train')
+    test_iterator = return_iter(args, 'test')
     test_iterator_eve = return_iter_eve(args, 'test')
     iter_eve = iter(test_iterator_eve)
 
@@ -227,7 +228,7 @@ def performance(schedule, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve
                     # src = batch.src.transpose(0, 1)[:1]
                     target = sents
 
-                    out = greedy_decode(schedule, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
+                    out = greedy_decode(scaler_f0, scaler_cond, cdmodel, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping,
                                                                                         sents, sents_eve,
                                                                                         noise_std, args.MAX_LENGTH,
                                                                                         pad_idx,
@@ -349,6 +350,7 @@ if __name__ == '__main__':
 
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 之前三个检测率都最好
+    checkpoint_cd = torch.load(r'/root/autodl-tmp/restore/checkpoints/34/2026-02-25-18_02_33/checkpoint_857')  # 预训练好的cdmodel
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -359,6 +361,7 @@ if __name__ == '__main__':
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
     Eve_mapping_state_dict = checkpoint['Eve_mapping']
+    cdmodel_state_dict = checkpoint_cd['cdmodel']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
@@ -370,6 +373,7 @@ if __name__ == '__main__':
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
     Eve_mapping.load_state_dict(Eve_mapping_state_dict)
+    cdmodel.load_state_dict(cdmodel_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)
@@ -381,8 +385,9 @@ if __name__ == '__main__':
     Alice_mapping = Alice_mapping.to(device)
     Bob_mapping = Bob_mapping.to(device)
     Eve_mapping = Eve_mapping.to(device)
+    cdmodel = cdmodel.to(device)
 
-    initNetParams(cdmodel)
+    # initNetParams(cdmodel)
 
     optimizer = torch.optim.Adam(deepsc.parameters(),
                                  lr=1e-5, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
@@ -404,9 +409,9 @@ if __name__ == '__main__':
         start = time.time()  # 记录每轮开始时间（没用到）
         record_loss = 1000  # 其实是loss，设置的大一点
 
-        loss_eps, loss_keep, loss_keep_k, status = train(scaler_f0, scaler_cond, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
+        loss_eps = train(scaler_f0, scaler_cond, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)  # 单独预训练deepsc
 
-        loss_eps_test, loss_keep_test, status_test = validate(scaler_f0, scaler_cond, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
+        loss_eps_test, loss_keep_test = validate(scaler_f0, scaler_cond, cdmodel, epoch, args, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
 
         bleu_score = performance(scaler_f0, scaler_cond, cdmodel, args, SNR, deepsc, alice_bob_mac, key_ab, eve, Alice_KB, Bob_KB, Eve_KB, Alice_mapping, Bob_mapping, Eve_mapping)
         print("bleu_score: ", bleu_score)
@@ -420,11 +425,11 @@ if __name__ == '__main__':
 
         writer.add_scalar('Loss_eps', loss_eps, epoch)
         writer.add_scalar('Loss_eps_test', loss_eps_test, epoch)
-        writer.add_scalar('Loss_keep', loss_keep, epoch)
-        writer.add_scalar('Loss_keep_k', loss_keep_k, epoch)
+        # writer.add_scalar('Loss_keep', loss_keep, epoch)
+        # writer.add_scalar('Loss_keep_k', loss_keep_k, epoch)
         writer.add_scalar('Loss_keep_test', loss_keep_test, epoch)
         writer.add_scalar('BLEU_score', bleu_score[0], epoch)
-        for key, value in status.items():
-            writer.add_scalar(key, value, epoch)
-        for key, value in status_test.items():
-            writer.add_scalar('Test_' + key, value, epoch)
+        # for key, value in status.items():
+        #     writer.add_scalar(key, value, epoch)
+        # for key, value in status_test.items():
+        #     writer.add_scalar('Test_' + key, value, epoch)

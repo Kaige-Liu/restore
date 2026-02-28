@@ -205,6 +205,35 @@ def run_experiment():
         writer.close()
 
 
+@torch.no_grad()
+def recover_feature(model, f_cond_norm_trans, num_steps=50):
+    """
+    此时输入的 f_cond_norm_trans 已经是 [bs, 128, 31]
+    """
+    model.eval()
+    device = next(model.parameters()).device
+
+    # 1. 此时输入已经是 [bs, 128, 31]，直接用，不要再转置了
+    f_cond_input = f_cond_norm_trans.to(device)
+
+    # 2. 准备起点噪声 [bs, 128, 31]
+    f_t = torch.randn_like(f_cond_input).to(device)
+
+    # 3. 设置 DDIM 步数
+    model.scheduler.set_timesteps(num_steps)
+
+    # 4. 迭代去噪
+    for t in tqdm(model.scheduler.timesteps, desc="DDIM Recovering", leave=False):
+        # f_t: [bs, 128, 31], f_cond_input: [bs, 128, 31]
+        # 模型内部 cat(dim=1) 得到 [bs, 256, 31] -> 完美匹配！
+        noise_pred = model(f_t, t.to(device), f_cond_input)
+
+        # 计算上一步
+        f_t = model.scheduler.step(noise_pred, t, f_t).prev_sample
+
+    # 5. 为了配合主流程后续的逆归一化，转回 [bs, 31, 128]
+    return f_t.transpose(1, 2)
+
 if __name__ == "__main__":
     now = time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(time.time()))
     os.mkdir("./checkpoints/34/" + now)
