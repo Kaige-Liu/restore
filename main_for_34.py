@@ -274,6 +274,7 @@ def performance(scaler_f0, scaler_cond, cdmodel, args, SNR, deepsc, alice_bob_ma
 
 
 if __name__ == '__main__':
+
     now = time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(time.time()))
     # if not os.path.isdir("./checkpoints/deepsc_hiding/" + now):
     #     os.mkdir("./checkpoints/deepsc_hiding/" + now)
