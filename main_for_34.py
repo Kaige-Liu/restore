@@ -31,7 +31,7 @@ parser.add_argument('--d-model', default=128, type=int)
 parser.add_argument('--dff', default=512, type=int)
 parser.add_argument('--num-layers', default=4, type=int)
 parser.add_argument('--num-heads', default=8, type=int)
-parser.add_argument('--batch-size', default=88, type=int)
+parser.add_argument('--batch-size', default=512, type=int)
 parser.add_argument('--epochs', default=600, type=int)
 
 parser.add_argument('--encoder-num-layer', default=4, type=int, help='The number of encoder layers')
@@ -166,7 +166,7 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
     Bob_mapping.eval()
 
     with torch.no_grad():
-        for epoch in range(3):  # 测试的时候跑三次
+        for epoch in range(1):  # 测试的时候跑三次
             Tx_word = []
             Rx_word = []
 
@@ -265,7 +265,7 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
 
     checkpoint = torch.load(
-        r'/root/lanyun-tmp/code-diffusion-text/restore_simple/checkpoints/checkpoint_109.pth')  # 语义通信那一大堆的网络
+        r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 语义通信那一大堆的网络
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -298,8 +298,8 @@ if __name__ == '__main__':
     # 在定义 optimizer_joint 之前，正式实例化 cdmodel 和调度器！
 
     cdmodel = FeatureRestorationDiT(
-        feature_dim=128,
-        seq_len=32,
+        feature_dim=22234,
+        seq_len=30,
         hidden_size=256,
         depth=4,
         num_heads=8
