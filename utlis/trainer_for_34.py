@@ -113,7 +113,7 @@ def train_step(args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_K
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]
 
     # 修改：Condition 必须是随机的低 SNR (-9 ~ +18)
-    current_cond_snr = np.random.uniform(18, 18)
+    current_cond_snr = np.random.uniform(9, 18)
     noise_std_condition = SNR_to_noise(current_cond_snr)
     snr_tensor = torch.full((bs,), current_cond_snr, device=device, dtype=torch.float32)
 
@@ -186,14 +186,14 @@ def train_step(args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_K
     timesteps = torch.randint(0, ddim_scheduler.num_train_timesteps, (bs,), device=device).long()
     noise = torch.randn_like(Tx_sig)
 
-    # 给 20dB pred加噪
+    # 给 最开始的Tx_sig加噪
     x_t = ddim_scheduler.add_noise(Tx_sig, noise, timesteps)
 
     # 10% 的概率丢弃条件 (无分类器引导)
     context_mask = torch.rand(bs, device=device) < 0.1
 
     # 模型预测噪声
-    noise_pred = cdmodel(x_t, Rx_sig, timesteps, snr_tensor, context_mask=context_mask)
+    noise_pred = cdmodel(x_t, Rx_sig_condition, timesteps, snr_tensor, context_mask=context_mask)
 
     # 计算 MSE Loss 并反向传播
     loss_eps = F.mse_loss(noise_pred, noise)
@@ -216,7 +216,7 @@ def val_step(args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_
     snr_min, snr_max = 20.0, 20.0
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]
 
-    current_cond_snr = np.random.uniform(18, 18)
+    current_cond_snr = np.random.uniform(9, 18)
     noise_std_condition = SNR_to_noise(current_cond_snr)
     snr_tensor = torch.full((bs,), current_cond_snr, device=device, dtype=torch.float32)
 
@@ -293,7 +293,7 @@ def val_step(args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_
         timesteps = torch.randint(0, ddim_scheduler.num_train_timesteps, (bs,), device=device).long()
         noise = torch.randn_like(Tx_sig)
         x_t = ddim_scheduler.add_noise(Tx_sig, noise, timesteps)
-        noise_pred = cdmodel(x_t, Rx_sig, timesteps, snr_tensor, context_mask=None)
+        noise_pred = cdmodel(x_t, Rx_sig_condition, timesteps, snr_tensor, context_mask=None)
         loss_eps = F.mse_loss(noise_pred, noise)
 
     return loss_eps.item()
