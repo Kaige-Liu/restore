@@ -280,7 +280,7 @@ if __name__ == '__main__':
     checkpoint = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 语义通信那一大堆的网络
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_43_33/checkpoint_220_0.1455.pth')  # 扩散模型
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 扩散模型
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -316,14 +316,12 @@ if __name__ == '__main__':
 
     # 联合训练的优化器
     optimizer_joint = torch.optim.Adam(
-        list(deepsc.channel_decoder.parameters()) +
-        list(deepsc.decoder.parameters()) +
-        list(deepsc.dense.parameters()),
+        list(deepsc.parameters()),
         # list(cdmodel.parameters()),  # 这就是您要写的那两个网络
         lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
 
     # 下面就是训练deepsc模型
-    SNR = [0]  # 这就是为了配合performance函数的 只有他是读SNR列表的
+    SNR = [18]  # 这就是为了配合performance函数的 只有他是读SNR列表的
     # SNR = [-6, -3, 0, 3, 6, 9, 12, 15, 18]  # 真正测试的时候 也就是最终呈现的表格 是BLEU在这些SNR下的曲线
     for epoch in range(args.epochs):
         record_loss = 1000  # 其实是loss，设置的大一点
@@ -343,9 +341,7 @@ if __name__ == '__main__':
 
         if loss_eps_test < record_loss:  # 如果验证的loss小于之前的loss（性能更好了）
             checkpoint = {
-                "deepsc_channel_decoder": deepsc.channel_decoder.state_dict(),
-                "deepsc_decoder": deepsc.decoder.state_dict(),
-                "deepsc_dense": deepsc.dense.state_dict(),
+                "deepsc": deepsc.state_dict(),
                 # "cdmodel": cdmodel.state_dict(),  # 保存您的网络参数
             }
             torch.save(checkpoint, './checkpoints/34/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}.pth'.format(

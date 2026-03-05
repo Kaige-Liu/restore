@@ -175,24 +175,12 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_43_33/checkpoint_220_0.1455.pth')  # 34部分的那三个网络
-    checkpoint_de = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-18_58_42/checkpoint_063_0.2043.pth'
-    )
-    en_state_dict = checkpoint['deepsc']
-    deepsc.encoder.load_state_dict(
-        {k.replace("encoder.", ""): v for k, v in en_state_dict.items() if k.startswith("encoder.")}
-    )
-    deepsc.channel_encoder.load_state_dict(
-        {k.replace("channel_encoder.", ""): v for k, v in en_state_dict.items() if k.startswith("channel_encoder.")}
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_43_33/checkpoint_220_0.1455.pth')  # 和main保持一致
+    checkpoint_deepsc = torch.load(
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-18_58_42/checkpoint_063_0.2043.pth'  # 新保存的deepsc模型
     )
 
-    deepsc.channel_decoder.load_state_dict(checkpoint_de["deepsc_channel_decoder"])
-    deepsc.decoder.load_state_dict(checkpoint_de["deepsc_decoder"])
-    deepsc.dense.load_state_dict(checkpoint_de["deepsc_dense"])
-
-
-
+    deepsc.load_state_dict(checkpoint_deepsc)  # 34部分的deepsc网络
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
     eve_state_dict = checkpoint['eve']
