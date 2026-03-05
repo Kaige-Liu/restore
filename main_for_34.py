@@ -279,8 +279,8 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 语义通信那一大堆的网络
-    checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 34部分的那三个网络
+    # checkpoint_34 = torch.load(
+    #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 34部分的那三个网络
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -288,7 +288,7 @@ if __name__ == '__main__':
     Bob_KB_state_dict = checkpoint['Bob_KB']
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
-    cdmodel_state_dict = checkpoint_34['cdmodel']
+    # cdmodel_state_dict = checkpoint_34['cdmodel']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
@@ -297,7 +297,7 @@ if __name__ == '__main__':
     Bob_KB.load_state_dict(Bob_KB_state_dict)
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
-    cdmodel.load_state_dict(cdmodel_state_dict)
+    # cdmodel.load_state_dict(cdmodel_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)
@@ -306,7 +306,7 @@ if __name__ == '__main__':
     Bob_KB = Bob_KB.to(device)
     Alice_mapping = Alice_mapping.to(device)
     Bob_mapping = Bob_mapping.to(device)
-    cdmodel = cdmodel.to(device)
+    # cdmodel = cdmodel.to(device)
 
     optimizer = torch.optim.Adam(deepsc.parameters(),
                                  lr=1e-5, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
@@ -317,7 +317,7 @@ if __name__ == '__main__':
     # 联合训练的优化器
     optimizer_joint = torch.optim.Adam(
         list(cdmodel.parameters()),  # 这就是您要写的那两个网络
-        lr=5e-5, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
+        lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
 
     # 下面就是训练deepsc模型
     SNR = [0]  # 这就是为了配合performance函数的 只有他是读SNR列表的

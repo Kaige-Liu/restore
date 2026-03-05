@@ -113,7 +113,7 @@ def train_step(args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_K
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]
 
     # 修改：Condition 必须是随机的低 SNR (-9 ~ +18)
-    current_cond_snr = np.random.uniform(9, 18)
+    current_cond_snr = np.random.uniform(3, 10)
     noise_std_condition = SNR_to_noise(current_cond_snr)
     snr_tensor = torch.full((bs,), current_cond_snr, device=device, dtype=torch.float32)
 
@@ -216,7 +216,7 @@ def val_step(args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_
     snr_min, snr_max = 20.0, 20.0
     noise_std = np.random.uniform(SNR_to_noise(snr_min), SNR_to_noise(snr_max), size=(1))[0]
 
-    current_cond_snr = np.random.uniform(9, 18)
+    current_cond_snr = np.random.uniform(3, 10)
     noise_std_condition = SNR_to_noise(current_cond_snr)
     snr_tensor = torch.full((bs,), current_cond_snr, device=device, dtype=torch.float32)
 

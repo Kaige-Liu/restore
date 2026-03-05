@@ -175,7 +175,7 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_17_43/checkpoint_019_0.5450.pth')  # 34部分的那三个网络
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_43_33/checkpoint_147_0.1608.pth')  # 34部分的那三个网络
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
