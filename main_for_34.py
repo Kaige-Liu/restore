@@ -298,8 +298,8 @@ if __name__ == '__main__':
     # 在定义 optimizer_joint 之前，正式实例化 cdmodel 和调度器！
 
     cdmodel = FeatureRestorationDiT(
-        feature_dim=22234,
-        seq_len=30,
+        feature_dim=16,
+        seq_len=32,
         hidden_size=256,
         depth=4,
         num_heads=8
@@ -335,7 +335,7 @@ if __name__ == '__main__':
             checkpoint = {
                 "cdmodel": cdmodel.state_dict(),  # 保存您的网络参数
             }
-            torch.save(checkpoint, './checkpoints/34/' + now + '/checkpoint_{}'.format(epoch) + '_{}.pth'.format(
+            torch.save(checkpoint, './checkpoints/34/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}.pth'.format(
                 str(bleu_score)[1:7]))  # 保存模型 这个您随意保存
             record_loss = loss_eps_test  # 更新最小的准确率
 
