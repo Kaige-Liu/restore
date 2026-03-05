@@ -29,7 +29,7 @@ parser.add_argument('--d-model', default=128, type=int)
 parser.add_argument('--dff', default=512, type=int)
 parser.add_argument('--num-layers', default=4, type=int)
 parser.add_argument('--num-heads', default=8, type=int)
-parser.add_argument('--batch-size', default=512, type=int)  # 这里控制的是每次拿(从数据集中读取)多少张牌(个句子)
+parser.add_argument('--batch-size', default=1024, type=int)  # 这里控制的是每次拿(从数据集中读取)多少张牌(个句子)
 parser.add_argument('--epochs', default=1, type=int)
 
 parser.add_argument('--encoder-num-layer', default=4, type=int, help='The number of encoder layers')
@@ -175,8 +175,24 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_43_33/checkpoint_147_0.1608.pth')  # 34部分的那三个网络
-    model_state_dict = checkpoint['deepsc']
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_43_33/checkpoint_220_0.1455.pth')  # 34部分的那三个网络
+    checkpoint_de = torch.load(
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-18_58_42/checkpoint_063_0.2043.pth'
+    )
+    en_state_dict = checkpoint['deepsc']
+    deepsc.encoder.load_state_dict(
+        {k.replace("encoder.", ""): v for k, v in en_state_dict.items() if k.startswith("encoder.")}
+    )
+    deepsc.channel_encoder.load_state_dict(
+        {k.replace("channel_encoder.", ""): v for k, v in en_state_dict.items() if k.startswith("channel_encoder.")}
+    )
+
+    deepsc.channel_decoder.load_state_dict(checkpoint_de["deepsc_channel_decoder"])
+    deepsc.decoder.load_state_dict(checkpoint_de["deepsc_decoder"])
+    deepsc.dense.load_state_dict(checkpoint_de["deepsc_dense"])
+
+
+
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
     eve_state_dict = checkpoint['eve']
@@ -189,7 +205,7 @@ if __name__ == '__main__':
     cdmodel_state_dict = checkpoint_34['cdmodel']
 
 
-    deepsc.load_state_dict(model_state_dict)
+    # deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
     key_ab.load_state_dict(key_state_dict)
     eve.load_state_dict(eve_state_dict)
