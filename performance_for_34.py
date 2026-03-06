@@ -175,12 +175,12 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-17_43_33/checkpoint_220_0.1455.pth')  # 和main保持一致
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 和main保持一致
     checkpoint_deepsc = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-18_58_42/checkpoint_063_0.2043.pth'  # 新保存的deepsc模型
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-20_54_42/checkpoint_318_0.8221.pth'  # 新保存的deepsc模型
     )
 
-    deepsc.load_state_dict(checkpoint_deepsc)  # 34部分的deepsc网络
+    model_state_dict = checkpoint_deepsc['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
     eve_state_dict = checkpoint['eve']
@@ -193,7 +193,7 @@ if __name__ == '__main__':
     cdmodel_state_dict = checkpoint_34['cdmodel']
 
 
-    # deepsc.load_state_dict(model_state_dict)
+    deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
     key_ab.load_state_dict(key_state_dict)
     eve.load_state_dict(eve_state_dict)
