@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--vocab-file', default='./data/vocab.json', type=str)
 parser.add_argument('--vocab_path', default='./data/vocab.json', type=str)
 parser.add_argument('--checkpoint-path', default='./checkpoints/34', type=str)
-parser.add_argument('--channel', default='Rayleigh', type=str, help='Please choose AWGN, Rayleigh, and Rician')
+parser.add_argument('--channel', default='AWGN', type=str, help='Please choose AWGN, Rayleigh, and Rician')
 parser.add_argument('--MAX-LENGTH', default=30, type=int)
 parser.add_argument('--MIN-LENGTH', default=4, type=int)
 parser.add_argument('--d-model', default=128, type=int)
@@ -176,11 +176,11 @@ if __name__ == '__main__':
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
     checkpoint_34 = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 和main保持一致
-    checkpoint_deepsc = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-20_54_42/checkpoint_318_0.8221.pth'  # 新保存的deepsc模型
-    )
+    # checkpoint_deepsc = torch.load(
+    #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-20_54_42/checkpoint_318_0.8221.pth'  # 新保存的deepsc模型
+    # )
 
-    model_state_dict = checkpoint_deepsc['deepsc']
+    model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
     eve_state_dict = checkpoint['eve']
