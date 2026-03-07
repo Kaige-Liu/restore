@@ -17,6 +17,8 @@ import torch.nn.functional as F
 from torch.autograd import Function
 import math
 
+from models.diffusion_dit import SinusoidalPosEmb
+
 # from models.text_hiding import Encoder_hiding, Embedder_hiding, CustomLinearLayer, Extractor, Decoder_hiding
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -359,13 +361,16 @@ class SNR_Net(nn.Module):
         super().__init__()
 
         self.net = nn.Sequential(
-            nn.Linear(1, 64),
+            SinusoidalPosEmb(128),
+            nn.Linear(128, 256),
             nn.ReLU(),
-            nn.Linear(64, d_model)
+            nn.Linear(256, d_model)
         )
 
     def forward(self, snr):
-        return self.net(snr)
+        out = self.net(snr)
+        out = out.unsqueeze(1)
+        return out
 
 class DeepSC(nn.Module):
     def __init__(self, num_layers, src_vocab_size, trg_vocab_size, src_max_len,

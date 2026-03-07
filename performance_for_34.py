@@ -9,12 +9,13 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
 from models.diffusion_dit import FeatureRestorationDiT
+from models.tranceiver_for_34 import SNR_Net
 from models.transceiver import DeepSC, Key_net, Attacker, MAC, CAEM_Fig2_SNR_1D, FeatureMapSelectionModule_SNR_AllC, \
     VerificationDiscriminatorLN, DiffusionSchedule, ConditionalDenoiser
 from utlis.tools import SNR_to_noise, SeqtoText, BleuScore
 from utlis.trainer_for_34 import train_step, val_step, greedy_decode, initNetParams, DDIMScheduler
 from dataset.dataloader import return_iter, return_iter_10, return_iter_eve
-from models.transceiver import DeepSC, Key_net, Attacker, MAC, KnowledgeBase, KB_Mapping
+from models.tranceiver_for_34 import DeepSC, Key_net, Attacker, MAC, KnowledgeBase, KB_Mapping
 from models.mutual_info import Mine
 from tqdm import tqdm
 
@@ -50,7 +51,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 # 将 cdmodel 和 ddim_scheduler 加入参数列表
-def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
+def performance(snr_net_alice, snr_net_bob, args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
                 ddim_scheduler):
     bleu_score_1gram = BleuScore(1, 0, 0, 0)
     bleu_score_2gram = BleuScore(0.5, 0.5, 0, 0)  # 主要关注这几个bleu分数
@@ -68,6 +69,9 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
     Bob_KB.eval()
     Alice_mapping.eval()
     Bob_mapping.eval()
+    cdmodel.eval()
+    snr_net_alice.eval()
+    snr_net_bob.eval()
 
     with torch.no_grad():
         for epoch in range(1):  # 测试的时候跑三次
@@ -85,7 +89,7 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
                     target = sents
 
                     # 把 cdmodel, ddim_scheduler 和 current_snr 传给 greedy_decode
-                    out = greedy_decode(args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping,
+                    out = greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping,
                                         Bob_mapping,
                                         sents,
                                         noise_std, args.MAX_LENGTH,
@@ -163,6 +167,9 @@ if __name__ == '__main__':
     Bob_mapping = KB_Mapping().to(device)
     Eve_mapping = KB_Mapping().to(device)
 
+    snr_net_alice = SNR_Net(args.d_model).to(device)
+    snr_net_bob = SNR_Net(args.d_model).to(device)
+
     cdmodel = FeatureRestorationDiT(
         feature_dim=16,
         seq_len=32,
@@ -176,11 +183,13 @@ if __name__ == '__main__':
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
     checkpoint_34 = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-05_46_40/checkpoint_073_0.6073.pth')
-    # checkpoint_deepsc = torch.load(
-    #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-20_54_42/checkpoint_318_0.8221.pth'  # 新保存的deepsc模型
+    checkpoint_deepsc_snr = torch.load(
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-21_28_55/checkpoint_084_0.5835.pth'  # 新保存的deepsc模型
+    )
+    # checkpoint_snr = torch.load(
+    #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-21_10_48/checkpoint_045_0.5454.pth'  # snr网络
     # )
-
-    model_state_dict = checkpoint['deepsc']
+    model_state_dict = checkpoint_deepsc_snr['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
     eve_state_dict = checkpoint['eve']
@@ -191,7 +200,8 @@ if __name__ == '__main__':
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
     Eve_mapping_state_dict = checkpoint['Eve_mapping']
     cdmodel_state_dict = checkpoint_34['cdmodel']
-
+    snr_net_alice_state_dict = checkpoint_deepsc_snr['snr_net_alice']
+    snr_net_bob_state_dict = checkpoint_deepsc_snr['snr_net_bob']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
@@ -204,6 +214,8 @@ if __name__ == '__main__':
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
     Eve_mapping.load_state_dict(Eve_mapping_state_dict)
     cdmodel.load_state_dict(cdmodel_state_dict)
+    snr_net_alice.load_state_dict(snr_net_alice_state_dict)
+    snr_net_bob.load_state_dict(snr_net_bob_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)
@@ -216,8 +228,10 @@ if __name__ == '__main__':
     Bob_mapping = Bob_mapping.to(device)
     Eve_mapping = Eve_mapping.to(device)
     cdmodel = cdmodel.to(device)
+    snr_net_alice = snr_net_alice.to(device)
+    snr_net_bob = snr_net_bob.to(device)
 
-    bleu_score = performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
+    bleu_score = performance(snr_net_alice, snr_net_bob, args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
                              cdmodel, ddim_scheduler)
 
     print(bleu_score)

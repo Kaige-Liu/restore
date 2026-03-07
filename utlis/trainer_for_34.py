@@ -131,7 +131,11 @@ def train_step(snr_net_alice, snr_net_bob, args, epoch, batch, model, alice_bob_
 
     key = generate_key(args, src.shape)
 
-    freeze_net(model, False)
+    freeze_net(model.encoder, True)
+    freeze_net(model.channel_encoder, False)
+    freeze_net(model.channel_decoder, False)
+    freeze_net(model.decoder, True)
+    freeze_net(model.dense, True)
     freeze_net(alice_bob_mac, False)
     freeze_net(key_ab, False)
     freeze_net(Alice_KB, False)
@@ -155,7 +159,8 @@ def train_step(snr_net_alice, snr_net_bob, args, epoch, batch, model, alice_bob_
 
     key_ebd = key_ab(key)  # 生成密钥
 
-    snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    # snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    snr_token = snr_net_alice(snr_tensor)
     enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final, snr_token)
     enc_output = enc_output[:, :31, :]  # 只前31个通道 f
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
@@ -243,7 +248,8 @@ def train_step(snr_net_alice, snr_net_bob, args, epoch, batch, model, alice_bob_
     # 下面是只训snr网络，完全不用cdmodel
     f_p = memory_condition[:, :31, :]
     mac_p = memory_condition[:, 31:, :]
-    snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
+    # snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
+    snr_token_bob = snr_net_bob(snr_tensor)
     dec_output = model.decoder(trg_inp, f_p, look_ahead_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p, snr_token_bob)
     pred = model.dense(dec_output)
     ntokens = pred.size(-1)
@@ -307,7 +313,8 @@ def val_step(snr_net_alice, snr_net_bob, args, batch, model, alice_bob_mac, key_
 
     key_ebd = key_ab(key)
 
-    snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    # snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    snr_token = snr_net_alice(snr_tensor)
     enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final, snr_token)
     enc_output = enc_output[:, :31, :]
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
@@ -365,7 +372,8 @@ def val_step(snr_net_alice, snr_net_bob, args, batch, model, alice_bob_mac, key_
     memory_condition = model.channel_decoder(Rx_sig_condition)
     f_p = memory_condition[:, :31, :]
     mac_p = memory_condition[:, 31:, :]
-    snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
+    # snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
+    snr_token_bob = snr_net_bob(snr_tensor)
     dec_output = model.decoder(trg_inp, f_p, look_ahead_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p, snr_token_bob)
     pred = model.dense(dec_output)
     ntokens = pred.size(-1)
@@ -421,7 +429,8 @@ def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_a
 
     key_ebd = key_ab(key)
 
-    snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    # snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    snr_token = snr_net_alice(snr_tensor)
     enc_output = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final, snr_token)
     enc_output = enc_output[:, :31, :]
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
@@ -516,8 +525,8 @@ def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_a
 
     f_p = memory[:, :31, :]  # 前31个通道 发送的时候也是
     mac_p = memory[:, 31:, :]
-    snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
-
+    # snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
+    snr_token_bob = snr_net_bob(snr_tensor)
     outputs = torch.ones(src.size(0), 1).fill_(start_symbol).type_as(src.data)
 
     for i in range(max_len - 1):

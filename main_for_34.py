@@ -121,6 +121,9 @@ def validate(snr_net_alice, snr_net_bob, epoch, args, net, alice_bob_mac, key_ab
     Bob_KB.eval()
     Alice_mapping.eval()
     Bob_mapping.eval()
+    cdmodel.eval()
+    snr_net_alice.eval()
+    snr_net_bob.eval()
 
     pbar = tqdm(test_iterator)
     batch = 0
@@ -166,6 +169,9 @@ def performance(snr_net_alice, snr_net_bob, args, SNR, deepsc, alice_bob_mac, ke
     Bob_KB.eval()
     Alice_mapping.eval()
     Bob_mapping.eval()
+    cdmodel.eval()
+    snr_net_alice.eval()
+    snr_net_bob.eval()
 
     with torch.no_grad():
         for epoch in range(1):  # 测试的时候跑三次
@@ -283,14 +289,16 @@ if __name__ == '__main__':
     ddim_scheduler = DDIMScheduler(device=device)
 
     # initNetParams(cdmodel)
-    initNetParams(snr_net_alice)
-    initNetParams(snr_net_bob)
+    # initNetParams(snr_net_alice)
+    # initNetParams(snr_net_bob)
 
 
     checkpoint = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 语义通信那一大堆的网络
     checkpoint_34 = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 扩散模型
+    checkpoint_snr = torch.load(
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-21_10_48/checkpoint_045_0.5454.pth')
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -299,6 +307,8 @@ if __name__ == '__main__':
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
     cdmodel_state_dict = checkpoint_34['cdmodel']
+    snr_net_alice_state_dict = checkpoint_snr['snr_net_alice']
+    snr_net_bob_state_dict = checkpoint_snr['snr_net_bob']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
@@ -307,7 +317,9 @@ if __name__ == '__main__':
     Bob_KB.load_state_dict(Bob_KB_state_dict)
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
-    # cdmodel.load_state_dict(cdmodel_state_dict)
+    cdmodel.load_state_dict(cdmodel_state_dict)
+    snr_net_alice.load_state_dict(snr_net_alice_state_dict)
+    snr_net_bob.load_state_dict(snr_net_bob_state_dict)
 
     deepsc = deepsc.to(device)
     alice_bob_mac = alice_bob_mac.to(device)
@@ -317,6 +329,8 @@ if __name__ == '__main__':
     Alice_mapping = Alice_mapping.to(device)
     Bob_mapping = Bob_mapping.to(device)
     cdmodel = cdmodel.to(device)
+    snr_net_alice = snr_net_alice.to(device)
+    snr_net_bob = snr_net_bob.to(device)
 
     optimizer = torch.optim.Adam(deepsc.parameters(),
                                  lr=1e-5, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
@@ -326,7 +340,7 @@ if __name__ == '__main__':
 
     # 联合训练的优化器
     optimizer_joint = torch.optim.Adam(
-        # list(deepsc.parameters()),
+        list(deepsc.parameters()) +
         # list(cdmodel.parameters()),
         list(snr_net_alice.parameters()) + list(snr_net_bob.parameters()),
         lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
@@ -352,11 +366,13 @@ if __name__ == '__main__':
 
         if loss_eps_test < record_loss:  # 如果验证的loss小于之前的loss（性能更好了）
             checkpoint = {
-                # "deepsc": deepsc.state_dict(),
-                "cdmodel": cdmodel.state_dict(),  # 保存您的网络参数
+                "deepsc": deepsc.state_dict(),
+                # "cdmodel": cdmodel.state_dict(),  # 保存您的网络参数
+                "snr_net_alice": snr_net_alice.state_dict(),
+                "snr_net_bob": snr_net_bob.state_dict(),
             }
             torch.save(checkpoint, './checkpoints/34/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}.pth'.format(
-                str(bleu_score[0])[1:7]))  # 保存模型 这个您随意保存
+                str(bleu_score[0])[:6]))  # 保存模型 这个您随意保存
             record_loss = loss_eps_test  # 更新最小的准确率
 
         writer.add_scalar('Loss_eps', loss_eps, epoch)
