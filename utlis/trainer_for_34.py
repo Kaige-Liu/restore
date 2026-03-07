@@ -110,7 +110,7 @@ def freeze_net(net, is_requires_grad):
         net.eval()
 
 
-def train_step(args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, src, trg,
+def train_step(snr_net_alice, snr_net_bob, args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, src, trg,
                n_var, pad, opt_joint, channel, cdmodel, ddim_scheduler, mi_net=None):
     torch.autograd.set_detect_anomaly(True)  # 检测梯度异常
 
@@ -138,7 +138,9 @@ def train_step(args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_K
     freeze_net(Bob_KB, False)
     freeze_net(Alice_mapping, False)
     freeze_net(Bob_mapping, False)
-    freeze_net(cdmodel, True)
+    freeze_net(cdmodel, False)
+    freeze_net(snr_net_alice, True)
+    freeze_net(snr_net_bob, True)
 
     Alice_ID = torch.randn(1, args.d_model).to(device)
     Bob_ID = torch.randn(1, args.d_model).to(device)
@@ -153,7 +155,8 @@ def train_step(args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_K
 
     key_ebd = key_ab(key)  # 生成密钥
 
-    enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)
+    snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final, snr_token)
     enc_output = enc_output[:, :31, :]  # 只前31个通道 f
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
 
@@ -217,30 +220,43 @@ def train_step(args, epoch, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_K
     #
     # 训练 DiT 模型
     # cdmodel.train()
+    # opt_joint.zero_grad()
+    #
+    # timesteps = torch.randint(0, ddim_scheduler.num_train_timesteps, (bs,), device=device).long()
+    # noise = torch.randn_like(Tx_sig)
+    #
+    # # 给 最开始的Tx_sig加噪
+    # x_t = ddim_scheduler.add_noise(Tx_sig, noise, timesteps)
+    #
+    # # 10% 的概率丢弃条件 (无分类器引导)
+    # context_mask = torch.rand(bs, device=device) < 0.1
+    #
+    # # 模型预测噪声
+    # noise_pred = cdmodel(x_t, Rx_sig_condition, timesteps, snr_tensor, context_mask=context_mask)
+    #
+    # # 计算 MSE Loss 并反向传播
+    # loss_eps = F.mse_loss(noise_pred, noise)
+    # loss_eps.backward()
+    # torch.nn.utils.clip_grad_norm_(cdmodel.parameters(), 1.0)
+    # opt_joint.step()
+
+    # 下面是只训snr网络，完全不用cdmodel
+    f_p = memory_condition[:, :31, :]
+    mac_p = memory_condition[:, 31:, :]
+    snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
+    dec_output = model.decoder(trg_inp, f_p, look_ahead_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p, snr_token_bob)
+    pred = model.dense(dec_output)
+    ntokens = pred.size(-1)
+    loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
     opt_joint.zero_grad()
-
-    timesteps = torch.randint(0, ddim_scheduler.num_train_timesteps, (bs,), device=device).long()
-    noise = torch.randn_like(Tx_sig)
-
-    # 给 最开始的Tx_sig加噪
-    x_t = ddim_scheduler.add_noise(Tx_sig, noise, timesteps)
-
-    # 10% 的概率丢弃条件 (无分类器引导)
-    context_mask = torch.rand(bs, device=device) < 0.1
-
-    # 模型预测噪声
-    noise_pred = cdmodel(x_t, Rx_sig_condition, timesteps, snr_tensor, context_mask=context_mask)
-
-    # 计算 MSE Loss 并反向传播
-    loss_eps = F.mse_loss(noise_pred, noise)
-    loss_eps.backward()
-    torch.nn.utils.clip_grad_norm_(cdmodel.parameters(), 1.0)
+    loss_deepsc.backward()
     opt_joint.step()
 
-    return loss_eps.item()
+    return loss_deepsc.item()
 
 
-def val_step(args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, src, trg, n_var,
+def val_step(snr_net_alice, snr_net_bob, args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, src, trg, n_var,
              pad, channel, cdmodel, ddim_scheduler):
     trg_inp = trg[:, :-1]
     trg_real = trg[:, 1:]
@@ -267,6 +283,8 @@ def val_step(args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_
     freeze_net(Bob_mapping, False)
     # cdmodel.eval()
     freeze_net(cdmodel, False)
+    freeze_net(snr_net_alice, False)
+    freeze_net(snr_net_bob, False)
 
     args.vocab_file = args.vocab_file
     vocab = json.load(open(args.vocab_file, 'rb'))
@@ -289,7 +307,8 @@ def val_step(args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_
 
     key_ebd = key_ab(key)
 
-    enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)
+    snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    enc_output = model.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final, snr_token)
     enc_output = enc_output[:, :31, :]
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
 
@@ -336,23 +355,34 @@ def val_step(args, batch, model, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_
     # ntokens = pred.size(-1)
     # loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
 
-    with torch.no_grad():
-        timesteps = torch.randint(0, ddim_scheduler.num_train_timesteps, (bs,), device=device).long()
-        noise = torch.randn_like(Tx_sig)
-        x_t = ddim_scheduler.add_noise(Tx_sig, noise, timesteps)
-        noise_pred = cdmodel(x_t, Rx_sig_condition, timesteps, snr_tensor, context_mask=None)
-        loss_eps = F.mse_loss(noise_pred, noise)
+    # with torch.no_grad():
+    #     timesteps = torch.randint(0, ddim_scheduler.num_train_timesteps, (bs,), device=device).long()
+    #     noise = torch.randn_like(Tx_sig)
+    #     x_t = ddim_scheduler.add_noise(Tx_sig, noise, timesteps)
+    #     noise_pred = cdmodel(x_t, Rx_sig_condition, timesteps, snr_tensor, context_mask=None)
+    #     loss_eps = F.mse_loss(noise_pred, noise)
 
-    return loss_eps.item()
+    memory_condition = model.channel_decoder(Rx_sig_condition)
+    f_p = memory_condition[:, :31, :]
+    mac_p = memory_condition[:, 31:, :]
+    snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
+    dec_output = model.decoder(trg_inp, f_p, look_ahead_mask, src_mask, Alice_mapping_final, Bob_kb_final, mac_p, snr_token_bob)
+    pred = model.dense(dec_output)
+    ntokens = pred.size(-1)
+    loss_deepsc = loss_function(pred.contiguous().view(-1, ntokens), trg_real.contiguous().view(-1), pad)
+
+    return loss_deepsc.item()
 
 
-def greedy_decode(args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, src, noise_std,
+def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, src, noise_std,
                   max_len, pad, start_symbol, channel, cdmodel=None, ddim_scheduler=None, current_snr=0.0):
     trg_inp = src[:, :-1]
     trg_real = src[:, 1:]
 
     bs = args.batch_size
     src_mask, look_ahead_mask = create_masks(src, trg_inp, pad)
+
+    snr_tensor = torch.full((bs,), current_snr, device=device, dtype=torch.float32)
 
     channels = Channels()
     bs = src.size(0)
@@ -367,6 +397,8 @@ def greedy_decode(args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_m
     freeze_net(Alice_mapping, False)
     freeze_net(Bob_mapping, False)
     freeze_net(cdmodel, False)
+    freeze_net(snr_net_alice, False)
+    freeze_net(snr_net_bob, False)
 
     args.vocab_file = args.vocab_file
     vocab = json.load(open(args.vocab_file, 'rb'))
@@ -389,7 +421,8 @@ def greedy_decode(args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_m
 
     key_ebd = key_ab(key)
 
-    enc_output = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final)
+    snr_token = snr_net_alice(snr_tensor.view(-1, 1, 1))
+    enc_output = deepsc.encoder(src, src_mask, Alice_kb_final, Bob_mapping_final, snr_token)
     enc_output = enc_output[:, :31, :]
     mac = alice_bob_mac.mac_encoder(key_ebd, enc_output, Alice_kb_final, Bob_mapping_final)
 
@@ -440,46 +473,50 @@ def greedy_decode(args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_m
 
     # 全频段巅峰记录查表硬路由 (Golden LUT Routing)
 
-    if cdmodel is not None and ddim_scheduler is not None:
+    # if cdmodel is not None and ddim_scheduler is not None:
+    #
+    #     snr_val = int(current_snr)
+    #
+    #     if snr_val in [3, 12, 15, 18]:
+    #         Tx_huifu = Rx_sig
+    #
+    #
+    #     else:
+    #         if snr_val <= 0:
+    #             cur_strength = 0.15
+    #             cur_cfg = 3.5
+    #             trust_base_ratio = 0.80
+    #             model_snr = 0.0
+    #         else:
+    #             cur_strength = 0.35
+    #             cur_cfg = 2.0
+    #             trust_base_ratio = 0.50
+    #             model_snr = float(current_snr)
+    #
+    #         snr_tensor = torch.full((bs,), model_snr, device=device, dtype=torch.float32)
+    #
+    #         Tx_huifu_dit = ddim_scheduler.ddim_sample(
+    #             model=cdmodel,
+    #             f_cond=Rx_sig,
+    #             snr_tensor=snr_tensor,
+    #             num_inference_steps=50,
+    #             guidance_scale=cur_cfg,
+    #             strength=cur_strength
+    #         )
+    #
+    #         # 物理兜底融合
+    #         Tx_huifu = trust_base_ratio * Rx_sig + (1.0 - trust_base_ratio) * Tx_huifu_dit
+    #
+    # else:
+    #     Tx_huifu = Rx_sig
+    #
+    # memory_huifu = deepsc.channel_decoder(Tx_huifu)
+    # f_p_huifu = memory_huifu[:, :31, :]
+    # mac_p_huifu = memory_huifu[:, 31:, :]
 
-        snr_val = int(current_snr)
-
-        if snr_val in [3, 12, 15, 18]:
-            Tx_huifu = Rx_sig
-
-
-        else:
-            if snr_val <= 0:
-                cur_strength = 0.15
-                cur_cfg = 3.5
-                trust_base_ratio = 0.80
-                model_snr = 0.0
-            else:
-                cur_strength = 0.35
-                cur_cfg = 2.0
-                trust_base_ratio = 0.50
-                model_snr = float(current_snr)
-
-            snr_tensor = torch.full((bs,), model_snr, device=device, dtype=torch.float32)
-
-            Tx_huifu_dit = ddim_scheduler.ddim_sample(
-                model=cdmodel,
-                f_cond=Rx_sig,
-                snr_tensor=snr_tensor,
-                num_inference_steps=50,
-                guidance_scale=cur_cfg,
-                strength=cur_strength
-            )
-
-            # 物理兜底融合
-            Tx_huifu = trust_base_ratio * Rx_sig + (1.0 - trust_base_ratio) * Tx_huifu_dit
-
-    else:
-        Tx_huifu = Rx_sig
-
-    memory_huifu = deepsc.channel_decoder(Tx_huifu)
-    f_p_huifu = memory_huifu[:, :31, :]
-    mac_p_huifu = memory_huifu[:, 31:, :]
+    f_p = memory[:, :31, :]  # 前31个通道 发送的时候也是
+    mac_p = memory[:, 31:, :]
+    snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
 
     outputs = torch.ones(src.size(0), 1).fill_(start_symbol).type_as(src.data)
 
@@ -490,8 +527,8 @@ def greedy_decode(args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_m
         combined_mask = torch.max(trg_mask, look_ahead_mask)
         combined_mask = combined_mask.to(device)
 
-        dec_output = deepsc.decoder(outputs, f_p_huifu, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final,
-                                    mac_p_huifu)
+        dec_output = deepsc.decoder(outputs, f_p, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final,
+                                    mac_p, snr_token_bob)
         pred = deepsc.dense(dec_output)
 
         prob = pred[:, -1:, :]

@@ -9,7 +9,7 @@ import torch.nn as nn
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 
-from models.tranceiver_for_34 import Key_net, Attacker, MAC
+from models.tranceiver_for_34 import Key_net, Attacker, MAC, SNR_Net
 from utlis.tools import SNR_to_noise, SeqtoText, BleuScore
 
 from utlis.trainer_for_34 import initNetParams, train_step, val_step, greedy_decode, DDIMScheduler
@@ -57,7 +57,7 @@ def setup_seed(seed):  # 设置随机种子，根本没用
     torch.backends.cudnn.deterministic = True
 
 
-def train(epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
+def train(snr_net_alice, snr_net_bob, epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
           ddim_scheduler, optimizer_joint, mi_net=None):  # 当前训练的轮数，命令行参数，模型，互信息网络（默认是None，也就是不训互信息网络）
     train_iterator = return_iter(args, 'train')  # 一个dataloader类型的对象（其实就是dataloder 用法完全一样）
 
@@ -86,7 +86,8 @@ def train(epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mappi
         else:
             # 我这里的是条件扩散模型的loss，您根据您的思路来设置训练的loss，完全不用管我这里的这个loss是什么
             # 把 cdmodel 和 ddim_scheduler 传给 train_step
-            loss_eps = train_step(args, epoch, batch, net,
+            loss_eps = train_step(snr_net_alice, snr_net_bob,
+                                  args, epoch, batch, net,
                                   alice_bob_mac, key_ab,
                                   Alice_KB, Bob_KB,
                                   Alice_mapping, Bob_mapping,
@@ -109,7 +110,7 @@ def train(epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mappi
 
 
 # 将 cdmodel 和 ddim_scheduler 加入参数列表
-def validate(epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
+def validate(snr_net_alice, snr_net_bob, epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
              ddim_scheduler):  # epoch表示正在验证的是第几轮
     test_iterator = return_iter(args, 'test')  # 从测试数据集中抓牌
 
@@ -130,7 +131,8 @@ def validate(epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_ma
             sents = sents.to(device)
 
             # cdmodel 和 ddim_scheduler 传给 val_step
-            loss_eps = val_step(args, batch, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
+            loss_eps = val_step(snr_net_alice, snr_net_bob,
+                                args, batch, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
                                 sents, sents, 0.1, pad_idx, args.channel, cdmodel, ddim_scheduler)
 
             total_eps += loss_eps
@@ -146,7 +148,7 @@ def validate(epoch, args, net, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_ma
 
 
 # 将 cdmodel 和 ddim_scheduler 加入参数列表
-def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
+def performance(snr_net_alice, snr_net_bob, args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
                 ddim_scheduler):
     bleu_score_1gram = BleuScore(1, 0, 0, 0)
     # bleu_score_2gram = BleuScore(0.5, 0.5, 0, 0)  # 主要关注这几个bleu分数
@@ -181,7 +183,8 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
                     target = sents
 
                     # 把 cdmodel, ddim_scheduler 和 current_snr 传给 greedy_decode
-                    out = greedy_decode(args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping,
+                    out = greedy_decode(snr_net_alice, snr_net_bob,
+                                        args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping,
                                         Bob_mapping,
                                         sents,
                                         noise_std, args.MAX_LENGTH,
@@ -264,6 +267,9 @@ if __name__ == '__main__':
     Alice_mapping = KB_Mapping().to(device)  # 我的那个知识库映射组件 跟着流程走就行了 完全不用管
     Bob_mapping = KB_Mapping().to(device)
 
+    snr_net_alice = SNR_Net(args.d_model).to(device)
+    snr_net_bob = SNR_Net(args.d_model).to(device)
+
     # 在定义 optimizer_joint 之前，正式实例化 cdmodel 和调度器！
 
     cdmodel = FeatureRestorationDiT(
@@ -276,13 +282,15 @@ if __name__ == '__main__':
 
     ddim_scheduler = DDIMScheduler(device=device)
 
-    initNetParams(cdmodel)
+    # initNetParams(cdmodel)
+    initNetParams(snr_net_alice)
+    initNetParams(snr_net_bob)
 
 
     checkpoint = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 语义通信那一大堆的网络
-    # checkpoint_34 = torch.load(
-    #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 扩散模型
+    checkpoint_34 = torch.load(
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 扩散模型
     model_state_dict = checkpoint['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
@@ -290,7 +298,7 @@ if __name__ == '__main__':
     Bob_KB_state_dict = checkpoint['Bob_KB']
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
-    # cdmodel_state_dict = checkpoint_34['cdmodel']
+    cdmodel_state_dict = checkpoint_34['cdmodel']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
@@ -319,25 +327,26 @@ if __name__ == '__main__':
     # 联合训练的优化器
     optimizer_joint = torch.optim.Adam(
         # list(deepsc.parameters()),
-        list(cdmodel.parameters()),  # 这就是您要写的那两个网络
+        # list(cdmodel.parameters()),
+        list(snr_net_alice.parameters()) + list(snr_net_bob.parameters()),
         lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
 
     # 下面就是训练deepsc模型
-    SNR = [0]  # 这就是为了配合performance函数的 只有他是读SNR列表的
+    SNR = [0, 3]  # 这就是为了配合performance函数的 只有他是读SNR列表的
     # SNR = [-6, -3, 0, 3, 6, 9, 12, 15, 18]  # 真正测试的时候 也就是最终呈现的表格 是BLEU在这些SNR下的曲线
     for epoch in range(args.epochs):
         record_loss = 1000  # 其实是loss，设置的大一点
 
         # 把 cdmodel, ddim_scheduler 和 optimizer_joint 传进 train
-        loss_eps = train(epoch, args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
+        loss_eps = train(snr_net_alice, snr_net_bob, epoch, args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
                          cdmodel, ddim_scheduler, optimizer_joint)
 
         # 把 cdmodel 和 ddim_scheduler 传进 validate，并修复解包 Bug (原代码只返回一个值)
-        loss_eps_test = validate(epoch, args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping,
+        loss_eps_test = validate(snr_net_alice, snr_net_bob, epoch, args, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping,
                                  Bob_mapping, cdmodel, ddim_scheduler)
 
         # 把 cdmodel 和 ddim_scheduler 传进 performance
-        bleu_score = performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
+        bleu_score = performance(snr_net_alice, snr_net_bob, args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping,
                                  cdmodel, ddim_scheduler)
         print("bleu_score: ", bleu_score)
 
@@ -347,9 +356,10 @@ if __name__ == '__main__':
                 "cdmodel": cdmodel.state_dict(),  # 保存您的网络参数
             }
             torch.save(checkpoint, './checkpoints/34/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}.pth'.format(
-                str(bleu_score)[1:7]))  # 保存模型 这个您随意保存
+                str(bleu_score[0])[1:7]))  # 保存模型 这个您随意保存
             record_loss = loss_eps_test  # 更新最小的准确率
 
         writer.add_scalar('Loss_eps', loss_eps, epoch)
         writer.add_scalar('Loss_eps_test', loss_eps_test, epoch)
-        writer.add_scalar('BLEU_score', bleu_score[0], epoch)
+        writer.add_scalar('BLEU_score_0_db', bleu_score[0], epoch)
+        writer.add_scalar('BLEU_score_3_db', bleu_score[1], epoch)

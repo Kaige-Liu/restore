@@ -354,6 +354,18 @@ class KB_Mapping(nn.Module):
 
         return output
 
+class SNR_Net(nn.Module):
+    def __init__(self, d_model):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(1, 64),
+            nn.ReLU(),
+            nn.Linear(64, d_model)
+        )
+
+    def forward(self, snr):
+        return self.net(snr)
 
 class DeepSC(nn.Module):
     def __init__(self, num_layers, src_vocab_size, trg_vocab_size, src_max_len,
@@ -747,17 +759,19 @@ class Encoder(nn.Module):  # This is the encoder of transformer
         self.enc_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, dff, dropout)
                                          for _ in range(num_layers)])
 
-    def forward(self, x, src_mask, Alice_ID, Bob_ID):  # ID is float
+    def forward(self, x, src_mask, Alice_ID, Bob_ID, snr_token):  # ID is float
         "Pass the input (and mask) through each layer in turn."
         # the input size of x is [batch_size, seq_len]
         x = self.embedding(x) * math.sqrt(self.d_model)
         x = self.pos_encoding(x)
+
         # then cat the ID
-        x = torch.cat((x, Alice_ID, Bob_ID), 1)
+        x = torch.cat((x, Alice_ID, Bob_ID, snr_token), 1)
         # cat the mask
         Alice_KB_mask = torch.zeros(x.size(0), 1, 8).to(device)
         Bob_KB_mask = torch.zeros(x.size(0), 1, 8).to(device)
-        mask = torch.cat((src_mask, Alice_KB_mask, Bob_KB_mask), 2)
+        snr_mask = torch.zeros(x.size(0), 1, 1).to(device)
+        mask = torch.cat((src_mask, Alice_KB_mask, Bob_KB_mask, snr_mask), 2)
 
         for enc_layer in self.enc_layers:
             x = enc_layer(x, mask)
@@ -776,16 +790,17 @@ class Decoder(nn.Module):
         self.dec_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, dff, dropout)
                                          for _ in range(num_layers)])
 
-    def forward(self, x, memory, look_ahead_mask, trg_padding_mask, Alice_kb_final, Bob_kb_final, mac):
+    def forward(self, x, memory, look_ahead_mask, trg_padding_mask, Alice_kb_final, Bob_kb_final, mac, snr_token):
         x = self.embedding(x)
         x = self.pos_encoding(x)
-        memory = torch.cat((memory, Alice_kb_final, Bob_kb_final, mac), 1)
+        memory = torch.cat((memory, Alice_kb_final, Bob_kb_final, mac, snr_token), 1)
 
         # cat the mask
         Alice_KB_mask = torch.zeros(x.size(0), 1, 8).to(device)
         Bob_KB_mask = torch.zeros(x.size(0), 1, 8).to(device)
         mac_mask = torch.zeros(x.size(0), 1, 1).to(device)
-        mask = torch.cat((trg_padding_mask, Alice_KB_mask, Bob_KB_mask, mac_mask), 2)
+        snr_mask = torch.zeros(x.size(0), 1, 1).to(device)
+        mask = torch.cat((trg_padding_mask, Alice_KB_mask, Bob_KB_mask, mac_mask, snr_mask), 2)
 
         for dec_layer in self.dec_layers:
             x = dec_layer(x, memory, look_ahead_mask, mask)

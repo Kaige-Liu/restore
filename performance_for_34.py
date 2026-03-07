@@ -108,7 +108,7 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
 
             for sent1, sent2 in zip(Tx_word, Rx_word):  # sent1是第一个信噪比下的所有句子
                 # 1-gram
-                bleu_score.append(bleu_score_4gram.compute_score(sent1,
+                bleu_score.append(bleu_score_1gram.compute_score(sent1,
                                                                  sent2))  # 每个元素是list,bleu_score[0][0]是第一个信噪比下的第一个句子的BLEU分数,这样计算了所有的句子
                 # sim_score.append(similarity.compute_similarity(sent1, sent2)) # 7*num_sent
             bleu_score = np.array(bleu_score)  # 尺寸为7 * 句子数
@@ -123,7 +123,7 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    SNR = [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    SNR = [0, 1, 2, 3, 4, 5]
 
     args.vocab_file = args.vocab_file
     vocab = json.load(open(args.vocab_file, 'rb'))
