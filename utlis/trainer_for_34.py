@@ -482,49 +482,49 @@ def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_a
 
     # 全频段巅峰记录查表硬路由 (Golden LUT Routing)
 
-    # if cdmodel is not None and ddim_scheduler is not None:
-    #
-    #     snr_val = int(current_snr)
-    #
-    #     if snr_val in [3, 12, 15, 18]:
-    #         Tx_huifu = Rx_sig
-    #
-    #
-    #     else:
-    #         if snr_val <= 0:
-    #             cur_strength = 0.15
-    #             cur_cfg = 3.5
-    #             trust_base_ratio = 0.80
-    #             model_snr = 0.0
-    #         else:
-    #             cur_strength = 0.35
-    #             cur_cfg = 2.0
-    #             trust_base_ratio = 0.50
-    #             model_snr = float(current_snr)
-    #
-    #         snr_tensor = torch.full((bs,), model_snr, device=device, dtype=torch.float32)
-    #
-    #         Tx_huifu_dit = ddim_scheduler.ddim_sample(
-    #             model=cdmodel,
-    #             f_cond=Rx_sig,
-    #             snr_tensor=snr_tensor,
-    #             num_inference_steps=50,
-    #             guidance_scale=cur_cfg,
-    #             strength=cur_strength
-    #         )
-    #
-    #         # 物理兜底融合
-    #         Tx_huifu = trust_base_ratio * Rx_sig + (1.0 - trust_base_ratio) * Tx_huifu_dit
-    #
-    # else:
-    #     Tx_huifu = Rx_sig
-    #
-    # memory_huifu = deepsc.channel_decoder(Tx_huifu)
-    # f_p_huifu = memory_huifu[:, :31, :]
-    # mac_p_huifu = memory_huifu[:, 31:, :]
+    if cdmodel is not None and ddim_scheduler is not None:
 
-    f_p = memory[:, :31, :]  # 前31个通道 发送的时候也是
-    mac_p = memory[:, 31:, :]
+        snr_val = int(current_snr)
+
+        if snr_val in [3, 12, 15, 18]:
+            Tx_huifu = Rx_sig
+
+
+        else:
+            if snr_val <= 0:
+                cur_strength = 0.15
+                cur_cfg = 3.5
+                trust_base_ratio = 0.80
+                model_snr = 0.0
+            else:
+                cur_strength = 0.35
+                cur_cfg = 2.0
+                trust_base_ratio = 0.50
+                model_snr = float(current_snr)
+
+            snr_tensor = torch.full((bs,), model_snr, device=device, dtype=torch.float32)
+
+            Tx_huifu_dit = ddim_scheduler.ddim_sample(
+                model=cdmodel,
+                f_cond=Rx_sig,
+                snr_tensor=snr_tensor,
+                num_inference_steps=50,
+                guidance_scale=cur_cfg,
+                strength=cur_strength
+            )
+
+            # 物理兜底融合
+            Tx_huifu = trust_base_ratio * Rx_sig + (1.0 - trust_base_ratio) * Tx_huifu_dit
+
+    else:
+        Tx_huifu = Rx_sig
+
+    memory_huifu = deepsc.channel_decoder(Tx_huifu)
+    f_p_huifu = memory_huifu[:, :31, :]
+    mac_p_huifu = memory_huifu[:, 31:, :]
+
+    # f_p = memory[:, :31, :]  # 前31个通道 发送的时候也是
+    # mac_p = memory[:, 31:, :]
     # snr_token_bob = snr_net_bob(snr_tensor.view(-1, 1, 1))
     snr_token_bob = snr_net_bob(snr_tensor)
     outputs = torch.ones(src.size(0), 1).fill_(start_symbol).type_as(src.data)
@@ -536,8 +536,8 @@ def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_a
         combined_mask = torch.max(trg_mask, look_ahead_mask)
         combined_mask = combined_mask.to(device)
 
-        dec_output = deepsc.decoder(outputs, f_p, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final,
-                                    mac_p, snr_token_bob)
+        dec_output = deepsc.decoder(outputs, f_p_huifu, combined_mask, src_mask, Alice_mapping_final, Bob_kb_final,
+                                    mac_p_huifu, snr_token_bob)
         pred = deepsc.dense(dec_output)
 
         prob = pred[:, -1:, :]

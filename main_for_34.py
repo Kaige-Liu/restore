@@ -340,9 +340,9 @@ if __name__ == '__main__':
 
     # 联合训练的优化器
     optimizer_joint = torch.optim.Adam(
-        list(deepsc.parameters()) +
-        # list(cdmodel.parameters()),
-        list(snr_net_alice.parameters()) + list(snr_net_bob.parameters()),
+        # list(deepsc.parameters()) +
+        list(cdmodel.parameters()),
+        # list(snr_net_alice.parameters()) + list(snr_net_bob.parameters()),
         lr=1e-4, betas=(0.9, 0.98), eps=1e-8, weight_decay=5e-4)
 
     # 下面就是训练deepsc模型
