@@ -295,20 +295,22 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')  # 语义通信那一大堆的网络
+    # checkpoint_34 = torch.load(
+    #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 扩散模型
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 扩散模型
-    checkpoint_snr = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-21_10_48/checkpoint_045_0.5454.pth')
-    model_state_dict = checkpoint['deepsc']
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-05_46_40/checkpoint_073_0.6073.pth')  # 073的
+    checkpoint_deepsc_snr = torch.load(
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-21_28_55/checkpoint_084_0.5835.pth')
+    model_state_dict = checkpoint_deepsc_snr['deepsc']
     alice_bob_mac_state_dict = checkpoint['alice_bob_mac']
     key_state_dict = checkpoint['key_ab']
     Alice_KB_state_dict = checkpoint['Alice_KB']
     Bob_KB_state_dict = checkpoint['Bob_KB']
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
-    cdmodel_state_dict = checkpoint_34['cdmodel']
-    snr_net_alice_state_dict = checkpoint_snr['snr_net_alice']
-    snr_net_bob_state_dict = checkpoint_snr['snr_net_bob']
+    # cdmodel_state_dict = checkpoint_34['cdmodel']
+    snr_net_alice_state_dict = checkpoint_deepsc_snr['snr_net_alice']
+    snr_net_bob_state_dict = checkpoint_deepsc_snr['snr_net_bob']
 
     deepsc.load_state_dict(model_state_dict)
     alice_bob_mac.load_state_dict(alice_bob_mac_state_dict)
@@ -317,7 +319,7 @@ if __name__ == '__main__':
     Bob_KB.load_state_dict(Bob_KB_state_dict)
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
-    cdmodel.load_state_dict(cdmodel_state_dict)
+    # cdmodel.load_state_dict(cdmodel_state_dict)
     snr_net_alice.load_state_dict(snr_net_alice_state_dict)
     snr_net_bob.load_state_dict(snr_net_bob_state_dict)
 
@@ -366,10 +368,10 @@ if __name__ == '__main__':
 
         if loss_eps_test < record_loss:  # 如果验证的loss小于之前的loss（性能更好了）
             checkpoint = {
-                "deepsc": deepsc.state_dict(),
-                # "cdmodel": cdmodel.state_dict(),  # 保存您的网络参数
-                "snr_net_alice": snr_net_alice.state_dict(),
-                "snr_net_bob": snr_net_bob.state_dict(),
+                # "deepsc": deepsc.state_dict(),
+                "cdmodel": cdmodel.state_dict(),  # 保存您的网络参数
+                # "snr_net_alice": snr_net_alice.state_dict(),
+                # "snr_net_bob": snr_net_bob.state_dict(),
             }
             torch.save(checkpoint, './checkpoints/34/' + now + '/checkpoint_{}'.format(str(epoch).zfill(3)) + '_{}.pth'.format(
                 str(bleu_score[0])[:6]))  # 保存模型 这个您随意保存
