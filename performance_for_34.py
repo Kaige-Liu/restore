@@ -53,8 +53,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alice_mapping, Bob_mapping, cdmodel,
                 ddim_scheduler):
     bleu_score_1gram = BleuScore(1, 0, 0, 0)
-    # bleu_score_2gram = BleuScore(0.5, 0.5, 0, 0)  # 主要关注这几个bleu分数
-    # bleu_score_4gram = BleuScore(0.25, 0.25, 0.25, 0.25)
+    bleu_score_2gram = BleuScore(0.5, 0.5, 0, 0)  # 主要关注这几个bleu分数
+    bleu_score_4gram = BleuScore(0.25, 0.25, 0.25, 0.25)
 
     test_iterator = return_iter(args, 'test')
 
@@ -108,7 +108,7 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
 
             for sent1, sent2 in zip(Tx_word, Rx_word):  # sent1是第一个信噪比下的所有句子
                 # 1-gram
-                bleu_score.append(bleu_score_1gram.compute_score(sent1,
+                bleu_score.append(bleu_score_4gram.compute_score(sent1,
                                                                  sent2))  # 每个元素是list,bleu_score[0][0]是第一个信噪比下的第一个句子的BLEU分数,这样计算了所有的句子
                 # sim_score.append(similarity.compute_similarity(sent1, sent2)) # 7*num_sent
             bleu_score = np.array(bleu_score)  # 尺寸为7 * 句子数
@@ -123,7 +123,7 @@ def performance(args, SNR, deepsc, alice_bob_mac, key_ab, Alice_KB, Bob_KB, Alic
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    SNR = [0, 3, 6, 9, 12, 15, 18]
+    SNR = [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 
     args.vocab_file = args.vocab_file
     vocab = json.load(open(args.vocab_file, 'rb'))
@@ -175,7 +175,7 @@ if __name__ == '__main__':
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-15_05_48/checkpoint_071_0.9432.pth')  # 和main保持一致
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-05_46_40/checkpoint_073_0.6073.pth')
     # checkpoint_deepsc = torch.load(
     #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-05-20_54_42/checkpoint_318_0.8221.pth'  # 新保存的deepsc模型
     # )
