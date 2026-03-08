@@ -30,7 +30,7 @@ parser.add_argument('--d-model', default=128, type=int)
 parser.add_argument('--dff', default=512, type=int)
 parser.add_argument('--num-layers', default=4, type=int)
 parser.add_argument('--num-heads', default=8, type=int)
-parser.add_argument('--batch-size', default=1024, type=int)  # 这里控制的是每次拿(从数据集中读取)多少张牌(个句子)
+parser.add_argument('--batch-size', default=512, type=int)  # 这里控制的是每次拿(从数据集中读取)多少张牌(个句子)
 parser.add_argument('--epochs', default=1, type=int)
 
 parser.add_argument('--encoder-num-layer', default=4, type=int, help='The number of encoder layers')
@@ -127,7 +127,7 @@ def performance(snr_net_alice, snr_net_bob, args, SNR, deepsc, alice_bob_mac, ke
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    SNR = [0, 1, 2, 3, 4, 5]
+    SNR = [0]
 
     args.vocab_file = args.vocab_file
     vocab = json.load(open(args.vocab_file, 'rb'))
@@ -181,8 +181,10 @@ if __name__ == '__main__':
     ddim_scheduler = DDIMScheduler(device=device)
 
     checkpoint = torch.load(r'/root/autodl-tmp/restore/checkpoints/checkpoint_109.pth')
+    # checkpoint_34 = torch.load(
+    #     r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-05_46_40/checkpoint_073_0.6073.pth')
     checkpoint_34 = torch.load(
-        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-05_46_40/checkpoint_073_0.6073.pth')
+        r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-22_30_59/checkpoint_048_0.6266.pth')
     checkpoint_deepsc_snr = torch.load(
         r'/root/autodl-tmp/restore/checkpoints/34/2026-03-07-21_28_55/checkpoint_084_0.5835.pth'  # 新保存的deepsc模型
     )

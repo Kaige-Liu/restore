@@ -1,5 +1,7 @@
 # 9.4更新 将碰撞的Loss删除了(和雪崩的有点重复) 将所有的loss加在一起统一更新参数 把mod全撤了 全部直接训练
 import json
+import time
+
 import math
 import random
 
@@ -9,6 +11,7 @@ import numpy as np
 from models.mutual_info import sample_batch, mutual_information
 import torch.nn.functional as F
 
+from utlis.draw import plot_compare, plot_diffusion_paper_style
 from utlis.tools import SeqtoText, BleuScore
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -55,9 +58,10 @@ class DDIMScheduler:
 
         for i, t in enumerate(timesteps):
             t_tensor = torch.full((bs,), t, device=device, dtype=torch.long)
-            noise_pred_uncond = model(x_t, f_cond, t_tensor, snr_tensor, context_mask=context_mask_uncond)
-            noise_pred_cond = model(x_t, f_cond, t_tensor, snr_tensor, context_mask=context_mask_cond)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+            # 分类器CFG引导的核心部分，模型分别预测有条件和无条件的噪声，然后通过 guidance_scale 来调整它们的差异，从而引导生成过程更好地符合条件
+            noise_pred_uncond = model(x_t, f_cond, t_tensor, snr_tensor, context_mask=context_mask_uncond)  # 不看条件,预测的噪声
+            noise_pred_cond = model(x_t, f_cond, t_tensor, snr_tensor, context_mask=context_mask_cond)  # 看条件,预测的噪声
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)  # 分类器引导的核心公式
 
             alpha_prod_t = self.alphas_cumprod[t]
             if i < len(timesteps) - 1:
@@ -442,6 +446,7 @@ def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_a
 
     channel = 'AWGN'
     if channel == 'AWGN':
+        Rx_sig_biaozhun = channels.AWGN(Tx_sig, SNR_to_noise(20))
         Rx_sig = channels.AWGN(Tx_sig, noise_std)
     elif channel == 'Rayleigh':
         Rx_sig = channels.Rayleigh(Tx_sig, noise_std)
@@ -491,24 +496,24 @@ def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_a
 
 
         else:
-            if snr_val <= 0:
+            if snr_val < 0:
                 cur_strength = 0.15
                 cur_cfg = 3.5
                 trust_base_ratio = 0.80
                 model_snr = 0.0
-            else:
+            else:  # 全都走这
                 cur_strength = 0.35
                 cur_cfg = 2.0
                 trust_base_ratio = 0.50
                 model_snr = float(current_snr)
 
-            snr_tensor = torch.full((bs,), model_snr, device=device, dtype=torch.float32)
+            snr_tensor = torch.full(    (bs,), model_snr, device=device, dtype=torch.float32)
 
             Tx_huifu_dit = ddim_scheduler.ddim_sample(
                 model=cdmodel,
                 f_cond=Rx_sig,
                 snr_tensor=snr_tensor,
-                num_inference_steps=50,
+                num_inference_steps=5,
                 guidance_scale=cur_cfg,
                 strength=cur_strength
             )
@@ -519,9 +524,46 @@ def greedy_decode(snr_net_alice, snr_net_bob, args, deepsc, alice_bob_mac, key_a
     else:
         Tx_huifu = Rx_sig
 
+
+    # # 下面就是为了计时用的
+    # torch.cuda.synchronize()
+    # start = time.time()
+    # steps = 50
+    #
+    # for _ in range(50):  # 多跑几次求平均
+    #     out = ddim_scheduler.ddim_sample(
+    #         model=cdmodel,
+    #         f_cond=Rx_sig,
+    #         snr_tensor=snr_tensor,
+    #         num_inference_steps=steps,
+    #         guidance_scale=cur_cfg,
+    #         strength=cur_strength
+    #     )
+    #
+    # torch.cuda.synchronize()
+    # end = time.time()
+    #
+    # batch_time = (end - start) / 50
+    # sentence_time_ms = batch_time / bs * 1000  # 每句话的平均处理时间，单位是毫秒
+    # throughput = bs / batch_time  # 每秒处理的句子数量
+    # print(f"steps={steps}, Average time per sentence: {sentence_time_ms:.4f} ms, Throughput: {throughput:.4f} sentences/sec")
+
     memory_huifu = deepsc.channel_decoder(Tx_huifu)
     f_p_huifu = memory_huifu[:, :31, :]
     mac_p_huifu = memory_huifu[:, 31:, :]
+
+    # # 下面就是画图
+    # memory_biaozhun = deepsc.channel_decoder(Rx_sig_biaozhun)
+    # memory_condition = deepsc.channel_decoder(channels.AWGN(Tx_sig, SNR_to_noise(-3)))
+    # cd = channels.AWGN(Tx_sig, SNR_to_noise(-3))
+    # plot_compare(memory_biaozhun, memory_condition, memory_huifu, idx=0, save_path='compare_f.png')
+    # plot_diffusion_paper_style(
+    #     clean=memory_biaozhun,
+    #     noisy=memory_condition,
+    #     denoised=memory_huifu,
+    #     idx=0,
+    #     save_path='compare_df_f.png'
+    # )
 
     # f_p = memory[:, :31, :]  # 前31个通道 发送的时候也是
     # mac_p = memory[:, 31:, :]

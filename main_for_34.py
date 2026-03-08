@@ -308,7 +308,7 @@ if __name__ == '__main__':
     Bob_KB_state_dict = checkpoint['Bob_KB']
     Alice_mapping_state_dict = checkpoint['Alice_mapping']
     Bob_mapping_state_dict = checkpoint['Bob_mapping']
-    # cdmodel_state_dict = checkpoint_34['cdmodel']
+    cdmodel_state_dict = checkpoint_34['cdmodel']
     snr_net_alice_state_dict = checkpoint_deepsc_snr['snr_net_alice']
     snr_net_bob_state_dict = checkpoint_deepsc_snr['snr_net_bob']
 
@@ -319,7 +319,7 @@ if __name__ == '__main__':
     Bob_KB.load_state_dict(Bob_KB_state_dict)
     Alice_mapping.load_state_dict(Alice_mapping_state_dict)
     Bob_mapping.load_state_dict(Bob_mapping_state_dict)
-    # cdmodel.load_state_dict(cdmodel_state_dict)
+    cdmodel.load_state_dict(cdmodel_state_dict)
     snr_net_alice.load_state_dict(snr_net_alice_state_dict)
     snr_net_bob.load_state_dict(snr_net_bob_state_dict)
 
