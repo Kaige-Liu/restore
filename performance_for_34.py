@@ -118,7 +118,11 @@ def performance(snr_net_alice, snr_net_bob, args, SNR, deepsc, alice_bob_mac, ke
             bleu_score = np.array(bleu_score)  # 尺寸为7 * 句子数
             bleu_score = np.mean(bleu_score, axis=1)  # 每个信噪比下的所有句子的平均BLEU分数
             score.append(bleu_score)  # 存储到当前epoch中
-
+    for i in range(len(sent1)):
+        if len(sent1[i]) >= 100 and len(sent2[i]) >= 100:
+            print(sent2[i])
+            print(sent1[i])
+            print()
     score1 = np.mean(np.array(score), axis=0)  # 每个信噪比下的所有句子的平均BLEU分数(按照epoch平均)
     return score1
 
